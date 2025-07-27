@@ -6,3 +6,4 @@ You basically just put all of the files in a directory, run "buildozer android d
 Bug found, no way to delete saved chat rooms, will make changes and update files tonight 7/25/2025
 Fixed 2 issues with the Android app, copy key feature was not copying the encryption key to the clipboard, now fixed, added delete button to be able to remove old chat rooms or any you no longer want. Completed and tested 8:31PM 7/25/2025
 New feature for the Android app, I will make a qr code feature for sharing the encryption key, this will make it easier for ppl who are together to make a room, and share a key without having to transmit it over the net for even better privacy
+Minor fixes to chat screen, fixed keyboard covering text field issue where you couldn't see what you were typing while you typed 11:55PM 7/26/2025
