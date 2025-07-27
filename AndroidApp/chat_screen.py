@@ -9,7 +9,12 @@ from kivy.uix.button import Button
 from kivy.uix.popup import Popup
 from kivy.clock import Clock
 from kivy.app import App
+from kivy.core.window import Window
 from datetime import datetime
+
+# Set keyboard behavior for Android - MUST be early
+Window.keyboard_anim_args = {"d": .2, "t": "linear"}
+Window.softinput_mode = "below_target"
 
 class MQTTChatScreen(Screen):
     def __init__(self, **kwargs):
@@ -82,7 +87,7 @@ class MQTTChatScreen(Screen):
         layout.add_widget(self.scrollview)
 
         # Message input area
-        input_area = BoxLayout(
+        self.input_area = BoxLayout(
             size_hint_y=None, 
             height='60dp', 
             spacing=10,
@@ -104,11 +109,14 @@ class MQTTChatScreen(Screen):
         )
         self.send_button.bind(on_release=self.send_message)
         
-        input_area.add_widget(self.message_input)
-        input_area.add_widget(self.send_button)
-        layout.add_widget(input_area)
+        self.input_area.add_widget(self.message_input)
+        self.input_area.add_widget(self.send_button)
+        layout.add_widget(self.input_area)
 
         self.add_widget(layout)
+        
+        # Store main layout reference
+        self.main_layout = layout
         
         # Initialize with welcome message
         self.clear_messages()
