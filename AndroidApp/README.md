@@ -114,5 +114,6 @@ See [LICENSE](https://github.com/shaybee22/MQTTChat/blob/main/LICENSE) for usage
 ---
 **Future Features!**
 Adding qr code for easy encryption key sharing on the Android App!
+
 Added qr code for encryption key for sharing key in person at 10:00 PM 7/26/2025
 
