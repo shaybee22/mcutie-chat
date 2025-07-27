@@ -23,7 +23,7 @@ version = 0.1
 
 # (list) Application requirements
 # comma separated e.g. requirements = sqlite3,kivy
-requirements = python3,kivy==2.1.0,paho-mqtt==1.6.1,cryptography
+requirements = python3,kivy==2.1.0,paho-mqtt==1.6.1,cryptography,qrcode,pillow
 
 # (list) Supported orientations
 # Valid options are: landscape, portrait, portrait-reversed or landscape-reversed
