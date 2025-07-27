@@ -12,7 +12,7 @@ Welcome to the **Android Kivy version** of [MQTTChat](https://github.com/shaybee
 * 🔐 Password-derived encryption key (Fernet/AES)
 * 📱 Kivy GUI for mobile touch screens
 * 💬 Smooth chat interface with real-time updates
-* QR code button for sharing encryption key in person
+* 🔐 QR code button for sharing encryption key in person
 
 ---
 
