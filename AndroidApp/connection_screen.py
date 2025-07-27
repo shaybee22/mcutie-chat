@@ -2,6 +2,7 @@ import os
 import json
 import secrets
 import string
+import io
 from kivy.uix.screenmanager import Screen
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.label import Label
@@ -11,7 +12,9 @@ from kivy.uix.checkbox import CheckBox
 from kivy.uix.spinner import Spinner
 from kivy.uix.popup import Popup
 from kivy.uix.scrollview import ScrollView
+from kivy.uix.image import Image
 from kivy.clock import Clock
+from kivy.core.image import Image as CoreImage
 # Note: kivy.clipboard not available on Android
 
 ROOMS_DIR = "rooms"
@@ -244,42 +247,54 @@ class ConnectionScreen(Screen):
         key_layout.add_widget(self.generate_key_button)
         layout.add_widget(key_layout)
 
-        # Show key and copy buttons
+        # Key controls - now with 3 buttons: Show/Copy/QR
         key_controls = BoxLayout(
             orientation='horizontal', 
             size_hint_y=None, 
             height='60dp',
-            spacing=15
-        )
-        
-        # Show key toggle
-        show_layout = BoxLayout(
-            orientation='horizontal',
-            size_hint_x=0.6,
             spacing=10
         )
-        show_label = Label(
-            text='Show Key:', 
-            size_hint_x=0.7,
-            font_size='16sp'
+        
+        # Show key toggle (reduced width)
+        show_layout = BoxLayout(
+            orientation='horizontal',
+            size_hint_x=0.4,  # Reduced from 0.6
+            spacing=5
         )
-        self.show_key = CheckBox(size_hint_x=0.3, size_hint_y=None, height='40dp')
+        show_label = Label(
+            text='Show:', 
+            size_hint_x=0.6,
+            font_size='15sp'  # Slightly smaller
+        )
+        self.show_key = CheckBox(size_hint_x=0.4, size_hint_y=None, height='40dp')
         self.show_key.bind(active=self.toggle_key_visibility)
         show_layout.add_widget(show_label)
         show_layout.add_widget(self.show_key)
         
-        # Copy key button
+        # Copy key button (reduced width)
         self.copy_key_button = Button(
-            text='Copy Key',
-            size_hint_x=0.4,
-            font_size='16sp',
+            text='Copy',
+            size_hint_x=0.3,  # Reduced from 0.4
+            font_size='15sp',  # Slightly smaller
             size_hint_y=None,
             height='55dp'
         )
         self.copy_key_button.bind(on_release=self.copy_key)
         
+        # New QR key button
+        self.qr_key_button = Button(
+            text='Key QR',
+            size_hint_x=0.3,  # New button
+            font_size='15sp',
+            size_hint_y=None,
+            height='55dp',
+            background_color=[0.3, 0.6, 0.9, 1]  # Blue color to distinguish
+        )
+        self.qr_key_button.bind(on_release=self.show_key_qr)
+        
         key_controls.add_widget(show_layout)
         key_controls.add_widget(self.copy_key_button)
+        key_controls.add_widget(self.qr_key_button)
         layout.add_widget(key_controls)
 
         # Big spacer before saved rooms
@@ -407,6 +422,96 @@ class ConnectionScreen(Screen):
             # Another fallback if clipboard fails for any reason
             print(f"Clipboard error: {e}")
             self.show_popup(f"Could not copy to clipboard.\n\nEncryption Key:\n{self.key_input.text}\n\n(Long press to select and copy manually)")
+
+    def show_key_qr(self, instance):
+        """Show QR code for the encryption key"""
+        if not self.key_input.text.strip():
+            self.show_popup("No encryption key to show QR code for!")
+            return
+            
+        try:
+            # Import QR code libraries
+            import qrcode
+            from PIL import Image as PILImage
+            
+            # Generate QR code
+            qr = qrcode.QRCode(
+                version=1,
+                error_correction=qrcode.constants.ERROR_CORRECT_L,
+                box_size=10,
+                border=4,
+            )
+            qr.add_data(self.key_input.text.strip())
+            qr.make(fit=True)
+
+            # Create QR code image
+            qr_image = qr.make_image(fill_color="black", back_color="white")
+            
+            # Convert PIL image to bytes
+            img_buffer = io.BytesIO()
+            qr_image.save(img_buffer, format='PNG')
+            img_buffer.seek(0)
+            
+            # Create Kivy image from bytes
+            kivy_image = CoreImage(img_buffer, ext='png')
+            
+            # Create popup content
+            content_layout = BoxLayout(orientation='vertical', spacing=20, padding=20)
+            
+            # Instructions
+            instructions = Label(
+                text='Scan this QR code with any QR reader app\nto get the encryption key',
+                font_size='16sp',
+                halign='center',
+                valign='middle',
+                size_hint_y=None,
+                height='60dp',
+                text_size=(None, None)
+            )
+            content_layout.add_widget(instructions)
+            
+            # QR code image
+            qr_widget = Image(
+                texture=kivy_image.texture,
+                size_hint=(1, 1)
+            )
+            content_layout.add_widget(qr_widget)
+            
+            # Close button
+            close_button = Button(
+                text='Close',
+                size_hint_y=None,
+                height='50dp',
+                font_size='16sp'
+            )
+            content_layout.add_widget(close_button)
+            
+            # Create popup
+            popup = Popup(
+                title='Encryption Key QR Code',
+                content=content_layout,
+                size_hint=(0.9, 0.8),
+                auto_dismiss=True
+            )
+            
+            # Bind close button
+            close_button.bind(on_release=popup.dismiss)
+            
+            # Update instructions text size after popup opens
+            def update_instructions_size(dt):
+                try:
+                    instructions.text_size = (popup.width - 40, None)
+                except:
+                    pass
+            Clock.schedule_once(update_instructions_size, 0.1)
+            
+            popup.open()
+            
+        except ImportError as e:
+            self.show_popup(f"QR code libraries not available: {e}\nPlease check app installation.")
+        except Exception as e:
+            print(f"QR code generation error: {e}")
+            self.show_popup(f"Error generating QR code: {e}")
 
     def copy_room_config(self, instance):
         """Copy room configuration as shareable text"""
