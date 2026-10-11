@@ -18,12 +18,19 @@ source.main = main.py
 # (list) Source files to include (let empty to include all the files)
 source.include_exts = py,png,jpg,kv,atlas,json
 
+# (list) Directories to exclude from the APK
+source.exclude_dirs = tools, bin
+
 # (str) Application versioning (method 1)
 version = 0.3
 
 # (list) Application requirements
 # comma separated e.g. requirements = sqlite3,kivy
-requirements = python3,kivy==master,paho-mqtt==1.6.1,cryptography,qrcode,pillow
+# charset_normalizer (pulled in by kivy -> requests) is listed explicitly, with an underscore,
+# so p4a's resolver doesn't add its Android binary wheel (which p4a then installs with the
+# host pip, which rejects it). Build with PIP_NO_BINARY=charset-normalizer so the host pip
+# builds it as pure Python instead of bundling its x86_64 wheel.
+requirements = python3,kivy==2.3.1,paho-mqtt==2.1.0,cryptography,qrcode,pillow,charset_normalizer
 
 # (list) Supported orientations
 # Valid options are: landscape, portrait, portrait-reversed or landscape-reversed
@@ -40,7 +47,7 @@ fullscreen = 0
 android.permissions = INTERNET, ACCESS_NETWORK_STATE
 
 # (list) The Android archs to build for, choices: armeabi-v7a, arm64-v8a, x86, x86_64
-android.archs = arm64-v8a, armeabi-v7a
+android.archs = arm64-v8a
 
 # (bool) enables Android auto backup feature (Android API >=23)
 android.allow_backup = True

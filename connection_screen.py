@@ -1,7 +1,5 @@
 import os
 import json
-import secrets
-import string
 import io
 from kivy.uix.screenmanager import Screen
 from kivy.uix.boxlayout import BoxLayout
@@ -15,6 +13,7 @@ from kivy.uix.scrollview import ScrollView
 from kivy.uix.image import Image
 from kivy.clock import Clock
 from kivy.core.image import Image as CoreImage
+import chat_crypto
 # Note: kivy.clipboard not available on Android
 
 ROOMS_DIR = "rooms"
@@ -392,17 +391,9 @@ class ConnectionScreen(Screen):
         self.mqtt_password_input.password = not value
 
     def generate_key(self, instance):
-        """Generate a new encryption key (like desktop version)"""
-        try:
-            from cryptography.fernet import Fernet
-            key = Fernet.generate_key()
-            self.key_input.text = key.decode()
-            self.show_popup("New encryption key generated!")
-        except ImportError:
-            # Fallback to simple random key if cryptography not available
-            key = ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(32))
-            self.key_input.text = key
-            self.show_popup("New encryption key generated! (Install 'cryptography' package for stronger keys)")
+        """Generate a new random 256-bit encryption key (base64url)"""
+        self.key_input.text = chat_crypto.generate_key()
+        self.show_popup("New encryption key generated!")
 
     def copy_key(self, instance):
         """Copy the encryption key to clipboard"""

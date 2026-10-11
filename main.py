@@ -1,7 +1,5 @@
 import paho.mqtt.client as mqtt
 import json
-import base64
-import hashlib
 import time
 import threading
 from kivy.app import App
@@ -11,21 +9,18 @@ from connection_screen import ConnectionScreen
 from chat_screen import MQTTChatScreen
 from datetime import datetime
 
-# Import cryptography for proper encryption
-try:
-    from cryptography.fernet import Fernet
-    ENCRYPTION_AVAILABLE = True
-except ImportError:
+# AES-256-GCM message encryption (see chat_crypto.py / PROTOCOL.md)
+import chat_crypto
+ENCRYPTION_AVAILABLE = chat_crypto.AVAILABLE
+if not ENCRYPTION_AVAILABLE:
     print("Warning: cryptography package not available. Install with: pip install cryptography")
-    ENCRYPTION_AVAILABLE = False
-    Fernet = None
 
 class MQTTChatApp(App):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.mqtt_client = None
         self.username = "User"  # Chat display name
-        self.cipher = None  # Encryption cipher
+        self.key = None  # 32-byte AES-256-GCM key
         self.connected = False
         self.channel = ""
         self.heartbeat_timer = None
@@ -54,15 +49,6 @@ class MQTTChatApp(App):
         
         return self.screen_manager
     
-    def derive_key(self, password):
-        """Derive a Fernet key from a password (same as desktop version)"""
-        if not ENCRYPTION_AVAILABLE:
-            return None
-        # Use SHA256 to create a 32-byte key, then base64 encode for Fernet
-        hash_obj = hashlib.sha256(password.encode())
-        key = base64.urlsafe_b64encode(hash_obj.digest())
-        return key
-    
     def connect_to_mqtt(self, server, port, room, encryption_key, mqtt_username=None, mqtt_password=None):
         """Connect to MQTT broker with full encryption and authentication"""
         try:
@@ -77,14 +63,13 @@ class MQTTChatApp(App):
                 Clock.schedule_once(lambda dt: self.show_error("Encryption key is required!"))
                 return
             
-            # Setup encryption (same method as desktop)
-            key = self.derive_key(encryption_key)
-            self.cipher = Fernet(key)
-            
             # Setup topics (same as desktop)
             self.messages_topic = f"chat/{self.channel}/messages"
             self.presence_topic = f"chat/{self.channel}/presence"
             self.userlist_topic = f"chat/{self.channel}/users"
+            
+            # Setup encryption: generated key used directly, otherwise scrypt passphrase
+            self.key = chat_crypto.key_from_input(encryption_key, room)
             
             # Create MQTT client (fix deprecation warning like desktop)
             self.mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
@@ -177,9 +162,8 @@ class MQTTChatApp(App):
     def handle_chat_message(self, encrypted_payload):
         """Handle incoming chat message (same decryption as desktop)"""
         try:
-            # Decrypt message (same as desktop)
-            encrypted_data = base64.b64decode(encrypted_payload.encode())
-            decrypted_data = self.cipher.decrypt(encrypted_data)
+            # Decrypt message (AES-256-GCM, bound to this room's topic)
+            decrypted_data = chat_crypto.decrypt(self.key, encrypted_payload, self.messages_topic)
             message_data = json.loads(decrypted_data.decode())
             
             username = message_data.get("user", "Unknown")
@@ -266,10 +250,9 @@ class MQTTChatApp(App):
                 "timestamp": time.time()
             }
             
-            # Encrypt message (same method as desktop)
+            # Encrypt message (AES-256-GCM, bound to this room's topic)
             json_data = json.dumps(message_data)
-            encrypted_data = self.cipher.encrypt(json_data.encode())
-            encrypted_payload = base64.b64encode(encrypted_data).decode()
+            encrypted_payload = chat_crypto.encrypt(self.key, json_data.encode(), self.messages_topic)
             
             # Publish to MQTT
             self.mqtt_client.publish(self.messages_topic, encrypted_payload)
