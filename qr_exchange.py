@@ -43,13 +43,13 @@ def parse(text):
     try:
         data = json.loads(text)
     except (ValueError, TypeError):
-        raise ValueError("Not a MQTT Chat QR code.")
+        raise ValueError("Not a Mcutie Chat QR code.")
     if not isinstance(data, dict):
-        raise ValueError("Not a MQTT Chat QR code.")
+        raise ValueError("Not a Mcutie Chat QR code.")
     kind = data.get("type")
     if kind not in _FIELDS:
         raise ValueError(f"Unknown QR type: {kind!r}" if isinstance(kind, str) and kind
-                         else "Not a MQTT Chat QR code.")
+                         else "Not a Mcutie Chat QR code.")
     version = data.get("version")
     if version != VERSION or isinstance(version, bool):
         raise ValueError(f"Unsupported QR version: {version!r} (this app reads version {VERSION}).")
@@ -102,10 +102,10 @@ if __name__ == "__main__":
             return
         raise AssertionError(f"accepted: {text}")
 
-    rejects("https://example.com", "Not a MQTT Chat")
-    rejects("[1, 2]", "Not a MQTT Chat")
+    rejects("https://example.com", "Not a Mcutie Chat")
+    rejects("[1, 2]", "Not a Mcutie Chat")
     rejects('{"type":"wifi"}', "Unknown QR type")
-    rejects('{"version":1}', "Not a MQTT Chat")
+    rejects('{"version":1}', "Not a Mcutie Chat")
     rejects(k.replace('"version":1', '"version":2'), "Unsupported QR version")
     rejects(k.replace('"version":1', '"version":true'), "Unsupported QR version")
     rejects(k.replace('"key":"test_key"', '"key":""'), "empty room or key")

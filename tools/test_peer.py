@@ -1,4 +1,4 @@
-"""Headless MQTT Chat peer for testing the app against a real broker.
+"""Headless Mcutie Chat peer for testing the app against a real broker.
 
 Joins a room with the same topics, presence and encryption as the app
 (chat_crypto / PROTOCOL.md), optionally sends messages, and prints everything

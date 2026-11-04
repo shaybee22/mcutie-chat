@@ -57,7 +57,7 @@ if IS_ANDROID:
             intent.setClassName(activity.getPackageName(),
                                 "com.journeyapps.barcodescanner.CaptureActivity")
             intent.putExtra("SCAN_FORMATS", "QR_CODE")
-            intent.putExtra("PROMPT_MESSAGE", "Scan a MQTT Chat QR code")
+            intent.putExtra("PROMPT_MESSAGE", "Scan a Mcutie Chat QR code")
             intent.putExtra("BEEP_ENABLED", False)
             activity.startActivityForResult(intent, SCAN_REQUEST_CODE)
         except Exception as e:

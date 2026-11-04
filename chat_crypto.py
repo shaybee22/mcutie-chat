@@ -1,4 +1,4 @@
-"""Message encryption for MQTT Chat (wire format v1, see PROTOCOL.md).
+"""Message encryption for Mcutie Chat (wire format v1, see PROTOCOL.md).
 
 Payload = base64( version(1 byte) || nonce(12 bytes) || AES-256-GCM ciphertext+tag )
 AAD     = the MQTT messages topic, e.g. "chat/general/messages"

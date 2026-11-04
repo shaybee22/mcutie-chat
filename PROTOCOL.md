@@ -1,6 +1,8 @@
-# MQTT Chat wire protocol (v1)
+# Mcutie Chat wire protocol (v1)
 
 What another client (e.g. the desktop app) must implement to talk to the mobile app. Reference implementation: `chat_crypto.py` (run `python3 chat_crypto.py` for its self-test).
+
+The project was called MQTT Chat; the identifiers below that start with `mqttchat` (the scrypt salt and fingerprint prefixes, the QR `type` values and the client-ID prefix) are part of the wire format and keep that spelling. Renaming them would change every derived key and fingerprint and break existing QR codes.
 
 v1 replaces the old Fernet format. There's no backward compatibility: v1 clients and Fernet clients can't read each other's messages.
 

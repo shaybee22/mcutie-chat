@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project overview
 
-MQTT Chat: a Kivy mobile (Android-targeted) client for end-to-end encrypted group chat over an MQTT broker. It is a port of a separate "desktop version" (not in this repo) and must stay wire-compatible with it — many comments say "same as desktop" for that reason. There are no tests, linter config, or README.
+Mcutie Chat (formerly MQTT Chat): a Kivy mobile (Android-targeted) client for end-to-end encrypted group chat over an MQTT broker. It is a port of a separate "desktop version" (not in this repo) and must stay wire-compatible with it — many comments say "same as desktop" for that reason. There are no tests, linter config, or README.
 
 ## Commands
 
@@ -21,7 +21,7 @@ python3 chat_crypto.py
 ~/.venvs/mqttpeer/bin/python qr_exchange.py     # needs cryptography (CA validation)
 ~/.venvs/mqttpeer/bin/python tls_config.py      # needs cryptography + certifi
 
-# Build Android APK (config in buildozer.spec); output: bin/mqttchat-0.3-arm64-v8a-debug.apk
+# Build Android APK (config in buildozer.spec); output: bin/mcutiechat-0.3-arm64-v8a-debug.apk
 source ~/.venvs/buildozer/bin/activate          # must be activated (VIRTUAL_ENV set), not just on PATH
 export PATH="$HOME/.cargo/bin:$PATH"            # rustup/cargo: p4a builds cryptography from source
 export PIP_NO_BINARY=charset-normalizer         # see the comment above `requirements` in buildozer.spec
@@ -30,8 +30,8 @@ yes | buildozer android debug                   # `yes` accepts the SDK licences
 
 # Install and launch on the phone. If WSL's `adb devices` is empty (phone attached to Windows,
 # not via usbipd), use Windows' adb.exe with a Windows path: adb.exe install -r "$(wslpath -w bin/...apk)"
-adb install -r bin/mqttchat-0.3-arm64-v8a-debug.apk
-adb shell monkey -p org.example.mqttchat -c android.intent.category.LAUNCHER 1
+adb install -r bin/mcutiechat-0.3-arm64-v8a-debug.apk
+adb shell monkey -p org.example.mcutiechat -c android.intent.category.LAUNCHER 1
 adb logcat -s python:* SDL:* AndroidRuntime:*
 
 # Run the app on the desktop (WSLg). Kivy 2.3.1 has no Python 3.14 wheels, so use the 3.12 venv
@@ -53,7 +53,7 @@ Build quirks (all with p4a master + Python 3.14 host, Oct 2026):
 - p4a's resolver only honours pins written with underscores (`paho_mqtt==2.1.0`, `charset_normalizer`); a hyphenated name gets the latest wheel added as well.
 - The QR scanner is `com.journeyapps:zxing-android-embedded` via `android.gradle_dependencies` (Java only, no recipe). It doesn't ship AndroidX, so `androidx.core:core` is listed too. Don't `autoclass` its `IntentIntegrator`: that needs `androidx.fragment` and crashes at import. `android_qr.py` starts `CaptureActivity` with a plain Intent instead.
 - pyjnius picks overloads by argument type and can choose wrongly (e.g. `Intent.setClassName(Context, String)`). Prefer overloads that take only strings or primitives. Exceptions raised inside `@run_on_ui_thread` code are only logged, so report them back to the Kivy thread.
-- p4a reuses the built dist in `.buildozer/android/platform/build-arm64-v8a/dists/mqttchat`; after changing a recipe, delete that dist and the recipe's `build/other_builds/<recipe>` directory, or the APK won't change.
+- p4a reuses the built dist in `.buildozer/android/platform/build-arm64-v8a/dists/mcutiechat`; after changing a recipe, delete that dist and the recipe's `build/other_builds/<recipe>` directory, or the APK won't change.
 
 A local broker (e.g. `mosquitto` on `localhost:1883`, the UI defaults) is needed to exercise the chat flow.
 

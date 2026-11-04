@@ -1,10 +1,10 @@
 [app]
 
 # (str) Title of your application
-title = MQTT Chat
+title = Mcutie Chat
 
 # (str) Package name
-package.name = mqttchat
+package.name = mcutiechat
 
 # (str) Package domain (needed for android/ios packaging)
 package.domain = org.example

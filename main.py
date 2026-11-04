@@ -36,6 +36,7 @@ class MQTTChatApp(App):
         self.userlist_topic = ""
         
     def build(self):
+        self.title = "Mcutie Chat"  # window/task title (Kivy would otherwise derive "MQTTChat")
         # Create screen manager
         self.screen_manager = ScreenManager()
         

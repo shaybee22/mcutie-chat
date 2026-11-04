@@ -45,7 +45,7 @@ class ConnectionScreen(Screen):
 
         # App title with more space
         title = Label(
-            text='MQTT Chat App', 
+            text='Mcutie Chat', 
             font_size='28sp',  # Larger font
             size_hint_y=None, 
             height='80dp',  # Taller
@@ -575,7 +575,7 @@ class ConnectionScreen(Screen):
         fingerprint = self._fingerprint(key, room)
         if fingerprint:
             self._show_qr_popup('Room Key QR Code',
-                                'Scan with MQTT Chat (Scan QR)\nto import this room key',
+                                'Scan with Mcutie Chat (Scan QR)\nto import this room key',
                                 qr_exchange.build_key(room, key), fingerprint)
 
     def show_room_qr(self, instance):
@@ -619,7 +619,7 @@ class ConnectionScreen(Screen):
             "Show it only to people you'd give both to." + size_warning,
             'Show QR',
             lambda: self._show_qr_popup('Room QR Code',
-                                        'Scan with MQTT Chat (Scan QR)\nto join this room',
+                                        'Scan with Mcutie Chat (Scan QR)\nto join this room',
                                         payload, fingerprint))
 
     def _qr_version(self, payload):
@@ -900,7 +900,7 @@ class ConnectionScreen(Screen):
 
     def copy_room_config(self, instance):
         """Copy room configuration as shareable text"""
-        config_text = f"""MQTT Chat Room Config:
+        config_text = f"""Mcutie Chat Room Config:
 Server: {self.server_input.text}
 Port: {self.port_input.text}
 Room: {self.room_input.text}
