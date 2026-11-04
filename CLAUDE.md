@@ -16,9 +16,10 @@ python main.py
 # Run just the connection screen standalone (has its own __main__ test app)
 python connection_screen.py
 
-# Self-tests (no Kivy needed): crypto + fingerprint test vectors, QR payload rules
+# Self-tests (no Kivy needed): crypto + fingerprint test vectors, QR payload rules, TLS context/CA rules
 python3 chat_crypto.py
-python3 qr_exchange.py
+~/.venvs/mqttpeer/bin/python qr_exchange.py     # needs cryptography (CA validation)
+~/.venvs/mqttpeer/bin/python tls_config.py      # needs cryptography + certifi
 
 # Build Android APK (config in buildozer.spec); output: bin/mqttchat-0.3-arm64-v8a-debug.apk
 source ~/.venvs/buildozer/bin/activate          # must be activated (VIRTUAL_ENV set), not just on PATH
@@ -36,10 +37,13 @@ adb logcat -s python:* SDL:* AndroidRuntime:*
 # Run the app on the desktop (WSLg). Kivy 2.3.1 has no Python 3.14 wheels, so use the 3.12 venv
 ~/.venvs/mqttdesk/bin/python main.py
 
-# Headless test peer (venv: ~/.venvs/mqttpeer with paho-mqtt 2.1.0 + cryptography)
+# Headless test peer (venv: ~/.venvs/mqttpeer with paho-mqtt 2.1.0 + cryptography + certifi)
 CHAT_KEY=... MQTT_PASSWORD=... ~/.venvs/mqttpeer/bin/python tools/test_peer.py \
     --host BROKER --room ROOM --mqtt-user USER --send "hello" --duration 60
+#   add --tls (public CAs) or --tls --ca ca.pem (pinned) for TLS brokers
 ```
+
+TLS testing without a TLS broker: run a TLS-terminating proxy in WSL that forwards to the broker's plain port, using a throwaway CA made with the `openssl` recipe in `PROTOCOL.md`. Then `adb.exe reverse tcp:8883 tcp:8883` lets the phone reach it as `localhost:8883`. This was done in session scratch space and isn't kept in the repo.
 
 Build quirks (all with p4a master + Python 3.14 host, Oct 2026):
 - `kivy` is pinned to 2.3.1 because p4a's kivy recipe patches that release; `kivy==master` fails at patching.
@@ -62,9 +66,10 @@ A local broker (e.g. `mosquitto` on `localhost:1883`, the UI defaults) is needed
 No `.kv` files — all UI is built in Python in `__init__`.
 
 - `main.py` — `MQTTChatApp` owns all networking, encryption, and presence state, plus the `ScreenManager` with two screens (`'connection'`, `'chat'`). Screens never talk to MQTT directly; they call back into the app (`connect_to_mqtt`, `send_message`, `switch_to_connection`).
-- `connection_screen.py` — form for username/broker/room/MQTT auth/encryption key; saved-room profiles; key generation and clipboard copy. Also QR exchange: Key QR / Room QR (in memory only, fingerprint, 60 s countdown, FLAG_SECURE) and Scan QR with an import confirmation. The QR buttons are only on this screen, not the chat screen.
+- `connection_screen.py` — form for username/broker/room/MQTT auth/encryption key; saved-room profiles; key generation and clipboard copy. Also QR exchange: Key QR / Room QR (in memory only, fingerprint, 60 s countdown, FLAG_SECURE) and Scan QR with an import confirmation. The QR buttons are only on this screen, not the chat screen. Also the TLS checkbox (1883 ↔ 8883) and the CA PEM box (desktop: also load from a file). Rooms save `tls` and `ca`. QR codes are drawn at whole pixels per module on whole-pixel coordinates: fractional scaling made them unscannable.
 - `chat_crypto.py` — all key handling, message encrypt/decrypt and the key fingerprint (no Kivy imports). `main.py` and `connection_screen.py` call into it.
 - `qr_exchange.py` — builds and validates the two QR payloads (`mqttchat-key`, `mqttchat-room`; no Kivy imports). Scanned text is untrusted: it's validated here and escaped before display.
+- `tls_config.py` — TLS client context (no Kivy imports): pinned to the room's CA if it has one, otherwise the certifi list. Always verified, hostname checked, TLS 1.2+, strict X.509. Also validates and describes CA PEMs.
 - `android_qr.py` — Android-only: FLAG_SECURE on the window while a QR is shown, and the ZXing scanner (result via `android.activity.bind(on_activity_result=...)`). Does nothing on desktop.
 - `chat_screen.py` — renders messages into a single markup `Label` inside a `ScrollView`; the app pushes updates via `add_chat_message`, `add_system_message`, `update_users_list`.
 
@@ -101,7 +106,15 @@ The work is split into four phases (1: AES-256-GCM crypto, 2: TLS, 3: QR export,
 - Two-way messaging works, including Disconnect → Connect on both sides with no reconnect loop.
 - Rejections (wrong type or version, `tls: true`, non-app QR codes) are verified on desktop.
 
-**Next:** Phase 2 (TLS) — wait for the user. When it lands, room QRs can carry `tls: true`, which `qr_exchange.parse` currently rejects.
+**Phase 2 (TLS): done, tested on hardware.** Rooms have `tls` and an optional pinned `ca`, and Room QRs carry both. Tested through a local TLS proxy to the test broker:
+- the phone scanned a TLS Room QR with an EC CA and joined; two-way messages over TLS with the desktop;
+- the RSA CA QR (version 27, which triggers the size warning) also scanned from a maximized desktop window;
+- wrong CA, no CA against a self-signed certificate, and hostname mismatch were refused (test peer and desktop UI);
+- the public-CA (certifi) path was verified against `broker.emqx.io:8883`.
+
+**Not tested:** a real TLS listener on the user's broker (it has none yet), and TLS with a publicly trusted certificate on the phone itself.
+
+**Next:** nothing planned; wait for the user.
 
 **Known issues:**
 - The APK bundles `chardet` 7.6.0 (Kivy → requests) as x86_64 `.so` files. Nothing imports it.

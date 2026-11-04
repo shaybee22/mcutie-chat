@@ -32,7 +32,7 @@ version = 0.3
 # builds it as pure Python instead of bundling its x86_64 wheel.
 # paho_mqtt uses the underscore spelling for the same reason: with a hyphen, p4a's resolver
 # ignores the pin and adds the latest paho-mqtt wheel, which conflicts with it.
-requirements = python3,kivy==2.3.1,paho_mqtt==2.1.0,cryptography,qrcode,pillow,charset_normalizer
+requirements = python3,kivy==2.3.1,paho_mqtt==2.1.0,cryptography,qrcode,pillow,certifi,charset_normalizer
 
 # (list) Supported orientations
 # Valid options are: landscape, portrait, portrait-reversed or landscape-reversed

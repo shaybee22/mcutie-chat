@@ -20,6 +20,7 @@ import paho.mqtt.client as mqtt
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 import chat_crypto  # noqa: E402
+import tls_config  # noqa: E402
 
 
 def log(text):
@@ -36,6 +37,8 @@ def main():
     ap.add_argument("--mqtt-user")
     ap.add_argument("--mqtt-password", default=os.environ.get("MQTT_PASSWORD"))
     ap.add_argument("--send", action="append", default=[], help="message to send after joining (repeatable)")
+    ap.add_argument("--tls", action="store_true", help="connect with TLS (verified; see --ca)")
+    ap.add_argument("--ca", help="broker CA certificate file (PEM) to pin; default: public CAs (certifi)")
     ap.add_argument("--duration", type=float, default=0, help="exit after N seconds (0 = run until Ctrl-C / EOF)")
     args = ap.parse_args()
 
@@ -65,7 +68,7 @@ def main():
         if reason_code.is_failure:
             log(f"connect failed: {reason_code}")
             return
-        log(f"connected to {args.host}:{args.port}, room '{room}' as '{args.user}'")
+        log(f"connected to {args.host}:{args.port}{' (TLS)' if args.tls else ''}, room '{room}' as '{args.user}'")
         client.subscribe(messages_topic)
         client.subscribe(f"{presence_topic}/+")
         client.publish(my_presence, presence("online"), retain=True)
@@ -97,6 +100,11 @@ def main():
     if args.mqtt_user:
         client.username_pw_set(args.mqtt_user, args.mqtt_password or "")
     client.will_set(my_presence, presence("offline"), retain=True)
+    if args.tls:
+        ca_pem = open(args.ca).read() if args.ca else None
+        client.tls_set_context(tls_config.make_ssl_context(ca_pem))
+    elif args.ca:
+        ap.error("--ca requires --tls")
     client.connect(args.host, args.port, 60)
     client.loop_start()
 

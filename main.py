@@ -12,6 +12,7 @@ from datetime import datetime
 
 # AES-256-GCM message encryption (see chat_crypto.py / PROTOCOL.md)
 import chat_crypto
+import tls_config
 ENCRYPTION_AVAILABLE = chat_crypto.AVAILABLE
 if not ENCRYPTION_AVAILABLE:
     print("Warning: cryptography package not available. Install with: pip install cryptography")
@@ -51,7 +52,8 @@ class MQTTChatApp(App):
         
         return self.screen_manager
     
-    def connect_to_mqtt(self, server, port, room, encryption_key, mqtt_username=None, mqtt_password=None):
+    def connect_to_mqtt(self, server, port, room, encryption_key, mqtt_username=None, mqtt_password=None,
+                        tls=False, ca_pem=""):
         """Connect to MQTT broker with full encryption and authentication"""
         try:
             self.channel = room
@@ -94,8 +96,12 @@ class MQTTChatApp(App):
             will_msg = json.dumps({"user": self.username, "status": "offline", "timestamp": time.time()})
             self.mqtt_client.will_set(f"{self.presence_topic}/{self.username}", will_msg, retain=True)
             
+            # TLS: pinned to the room's CA if it has one, else the certifi list; never unverified
+            if tls:
+                self.mqtt_client.tls_set_context(tls_config.make_ssl_context(ca_pem or None))
+            
             # Connect
-            print(f"Connecting to {server}:{port}")
+            print(f"Connecting to {server}:{port}" + (" (TLS)" if tls else ""))
             self.mqtt_client.connect(server, port, 60)
             self.mqtt_client.loop_start()
             
@@ -335,9 +341,9 @@ class MQTTChatApp(App):
             self.mqtt_client = None
     
     def show_error(self, message):
-        """Show error message (can be implemented as popup or system message)"""
+        """Show an error popup (callers already run this on the Kivy thread)"""
         print(f"Error: {message}")
-        # For now, just print. Could be enhanced with popup later.
+        self.connection_screen.show_popup(message)
 
 if __name__ == '__main__':
     MQTTChatApp().run()

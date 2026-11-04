@@ -111,15 +111,49 @@ Full room, so a new user can join with one scan:
 | `room`, `key` | string | Required and non-empty. `key` uses the key rules above. |
 | `host` | string | Room type only. Required and non-empty. |
 | `port` | integer | Room type only. 1–65535. |
-| `tls` | boolean | Room type only. This version always exports `false` and rejects `true`, because TLS isn't implemented yet. |
+| `tls` | boolean | Room type only. Connect with TLS (see "TLS trust rules"). |
 | `mqtt_user`, `mqtt_pass` | string | Room type only. May be empty, for anonymous brokers. |
+| `ca` | string | Room type only, **optional**. Omitted when the room has no CA. Exactly one PEM CA certificate (`basicConstraints CA:TRUE`, not expired). Requires `tls: true`; rejected otherwise. |
 
 Readers must:
-- reject any payload that fails these rules;
+- reject any payload that fails these rules, including unknown values in an invalid `ca`;
 - show the fingerprint and get confirmation before importing;
 - escape scanned text before displaying it.
 
 The QR is only ever rendered in memory and shown with screenshots blocked (Android FLAG_SECURE). It closes after 60 s.
+
+## TLS trust rules
+
+A room's config has `tls` (boolean) and an optional `ca` (PEM text). Rooms saved before TLS default to `tls: false`, `ca: ""`.
+
+- **`tls` with `ca`:** trust **only** that CA (pinned). Never fall back to the public CA list.
+- **`tls` without `ca`:** verify against the bundled certifi (Mozilla) CA list, so brokers with a publicly trusted certificate (e.g. Let's Encrypt) just work.
+- **Never unverified:** there's no option to skip certificate or hostname verification.
+- Hostname verification is always on. A broker reached by IP address needs that IP in its certificate's subjectAltName.
+- Minimum TLS 1.2, with strict X.509 checks (OpenSSL `X509_V_FLAG_X509_STRICT`, the Python 3.13+ default).
+- The usual MQTT-over-TLS port is 8883.
+
+## Recommended self-signed broker CA
+
+Use an **EC P-256** CA valid for about **10 years**. Its PEM is about 620 bytes, so a Room QR including it stays around version 20 and scans easily off a screen. An RSA-2048 CA is about 1.2 KB, which pushes the QR past version 25; the app warns before showing a QR that large. A long-lived CA also means people don't have to re-scan when the broker's own certificate is renewed.
+
+```sh
+# CA (keep ca.key offline; distribute only ca.pem)
+openssl ecparam -name prime256v1 -genkey -noout -out ca.key
+openssl req -x509 -new -key ca.key -sha256 -days 3650 -subj "/CN=My MQTT CA" \
+  -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign" \
+  -addext "subjectKeyIdentifier=hash" -out ca.pem
+
+# Broker certificate: list every name/IP clients use in subjectAltName
+openssl ecparam -name prime256v1 -genkey -noout -out server.key
+openssl req -new -key server.key -subj "/CN=broker.example" -out server.csr
+printf "basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:broker.example,IP:203.0.113.10\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid\n" > server.ext
+openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial -sha256 -days 825 \
+  -extfile server.ext -out server.pem
+openssl verify -x509_strict -CAfile ca.pem server.pem   # must print: server.pem: OK
+```
+
+In mosquitto: `listener 8883`, `cafile ca.pem`, `certfile server.pem`, `keyfile server.key`.
 
 ## MQTT client ID
 
