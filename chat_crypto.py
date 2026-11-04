@@ -28,6 +28,7 @@ SCRYPT_N = 2 ** 15
 SCRYPT_R = 8
 SCRYPT_P = 1
 SALT_PREFIX = b"mqttchat-scrypt-v1:"
+FINGERPRINT_PREFIX = b"mqttchat-fp-v1:"
 
 # 32 bytes in base64url is 43 characters plus one optional '=' of padding
 RAW_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{43}=?$")
@@ -61,6 +62,12 @@ def key_from_input(text, room):
         return key
     kdf = Scrypt(salt=room_salt(room), length=KEY_SIZE, n=SCRYPT_N, r=SCRYPT_R, p=SCRYPT_P)
     return kdf.derive(text.encode("utf-8"))
+
+
+def fingerprint(key):
+    """Short, read-aloud check value for a 32-byte key, e.g. '7F3A-91C2-04BE-D513'."""
+    digest = hashlib.sha256(FINGERPRINT_PREFIX + key).hexdigest()[:16].upper()
+    return "-".join(digest[i:i + 4] for i in range(0, 16, 4))
 
 
 def _seal(key, nonce, plaintext, topic):
@@ -135,4 +142,9 @@ if __name__ == "__main__":
     print("test vector nonce (hex):    ", vec_nonce.hex())
     print("test vector payload:        ", _seal(vec_key, vec_nonce, msg, topic))
     print("scrypt('hunter2', room 'general') (hex):", k1.hex())
+    assert fingerprint(vec_key) == fingerprint(bytes(range(32)))
+    assert fingerprint(vec_key) != fingerprint(k1)
+    assert re.match(r"^[0-9A-F]{4}(-[0-9A-F]{4}){3}$", fingerprint(k1))
+    print("fingerprint(test vector key):", fingerprint(vec_key))
+    print("fingerprint(scrypt('hunter2', room 'general')):", fingerprint(k1))
     print("all self-tests passed")

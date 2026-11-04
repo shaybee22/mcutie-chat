@@ -71,3 +71,56 @@ Passphrase derivation:
 passphrase "hunter2", room "general"
 key (hex): 1e7e9f2ad029402272181e0455173a2adb306c7eafad9f00249c61d0e402a2a7
 ```
+
+## Key fingerprint
+
+A short value two people read aloud to confirm they have the same key. It's computed over the 32-byte key *after* the key rules above (raw key, or scrypt-derived for a passphrase), so it depends on the room for passphrases:
+
+```
+fp = hex_upper( SHA-256( b"mqttchat-fp-v1:" + key32 )[:8] )   → 16 hex chars, shown as XXXX-XXXX-XXXX-XXXX
+```
+
+Test vectors:
+
+```
+key bytes 0x00..0x1f (the raw-key test vector above)  →  273B-2CAF-623A-EBA8
+passphrase "hunter2", room "general"                  →  E289-0BFB-A5B3-18D3
+```
+
+## QR exchange
+
+QR codes carry compact UTF-8 JSON. Both types show the fingerprint of the key they carry (for the room they carry). **Neither ever contains the chat username:** the receiver uses their own name.
+
+Key only, for people already on the broker:
+
+```json
+{"type":"mqttchat-key","version":1,"room":"chatty","key":"<key or passphrase>"}
+```
+
+Full room, so a new user can join with one scan:
+
+```json
+{"type":"mqttchat-room","version":1,"host":"broker.example","port":1883,"tls":false,
+ "mqtt_user":"user","mqtt_pass":"pass","room":"chatty","key":"<key or passphrase>"}
+```
+
+| Field | Type | Rule |
+|---|---|---|
+| `type` | string | `mqttchat-key` or `mqttchat-room`. Anything else is rejected. |
+| `version` | integer | `1`. Anything else, including `true`, is rejected. |
+| `room`, `key` | string | Required and non-empty. `key` uses the key rules above. |
+| `host` | string | Room type only. Required and non-empty. |
+| `port` | integer | Room type only. 1–65535. |
+| `tls` | boolean | Room type only. This version always exports `false` and rejects `true`, because TLS isn't implemented yet. |
+| `mqtt_user`, `mqtt_pass` | string | Room type only. May be empty, for anonymous brokers. |
+
+Readers must:
+- reject any payload that fails these rules;
+- show the fingerprint and get confirmation before importing;
+- escape scanned text before displaying it.
+
+The QR is only ever rendered in memory and shown with screenshots blocked (Android FLAG_SECURE). It closes after 60 s.
+
+## MQTT client ID
+
+Each client uses a random client ID, `mqttchat-` plus 16 hex characters, generated for every connection. It's never derived from the user name or the room config. MQTT brokers disconnect an existing session when a second one connects with the same ID, and everyone who scans the same room QR has the same config.

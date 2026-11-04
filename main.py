@@ -1,5 +1,6 @@
 import paho.mqtt.client as mqtt
 import json
+import secrets
 import time
 import threading
 from kivy.app import App
@@ -22,6 +23,7 @@ class MQTTChatApp(App):
         self.username = "User"  # Chat display name
         self.key = None  # 32-byte AES-256-GCM key
         self.connected = False
+        self.client_id = None  # random per connection, see connect_to_mqtt
         self.channel = ""
         self.heartbeat_timer = None
         self.online_users = set()
@@ -72,7 +74,11 @@ class MQTTChatApp(App):
             self.key = chat_crypto.key_from_input(encryption_key, room)
             
             # Create MQTT client (fix deprecation warning like desktop)
-            self.mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
+            # Random per connection (never derived from the name or room config), so two people
+            # using the same room QR - or a stale client from an earlier connection - never share
+            # a client ID and kick each other off the broker
+            self.client_id = "mqttchat-" + secrets.token_hex(8)
+            self.mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, client_id=self.client_id)
             self.mqtt_client.on_connect = self.on_mqtt_connect
             self.mqtt_client.on_message = self.on_mqtt_message
             self.mqtt_client.on_disconnect = self.on_mqtt_disconnect
@@ -294,9 +300,10 @@ class MQTTChatApp(App):
                     time.sleep(0.5)  # Give time for message to send
                     self.clear_my_presence()
                     
-                    # Stop the MQTT loop and disconnect
-                    self.mqtt_client.loop_stop()
+                    # Disconnect, then stop the MQTT loop (in this order so the DISCONNECT
+                    # packet is actually sent: a clean disconnect doesn't fire the Last Will)
                     self.mqtt_client.disconnect()
+                    self.mqtt_client.loop_stop()
                     
                 # Cancel timers
                 if self.heartbeat_timer:
@@ -312,8 +319,8 @@ class MQTTChatApp(App):
                 # Update GUI in main thread
                 Clock.schedule_once(lambda dt: self._finish_disconnect())
         
-        # Update status immediately
-        self.connected = False
+        # Note: don't clear self.connected here - the worker checks it to decide whether to
+        # disconnect; _finish_disconnect and on_mqtt_disconnect reset it afterwards
         
         # Run disconnect in background thread to avoid GUI freeze
         disconnect_thread = threading.Thread(target=_disconnect_worker, daemon=True)

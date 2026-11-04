@@ -13,10 +13,14 @@ from kivy.uix.scrollview import ScrollView
 from kivy.uix.image import Image
 from kivy.clock import Clock
 from kivy.core.image import Image as CoreImage
+from kivy.utils import escape_markup
 import chat_crypto
+import qr_exchange
+import android_qr
 # Note: kivy.clipboard not available on Android
 
 ROOMS_DIR = "rooms"
+QR_TIMEOUT = 60  # seconds a key/room QR stays on screen
 os.makedirs(ROOMS_DIR, exist_ok=True)
 
 class ConnectionScreen(Screen):
@@ -296,6 +300,34 @@ class ConnectionScreen(Screen):
         key_controls.add_widget(self.qr_key_button)
         layout.add_widget(key_controls)
 
+        # QR exchange: full-room QR for new users, and import by camera scan
+        qr_row = BoxLayout(
+            orientation='horizontal',
+            size_hint_y=None,
+            height='60dp',
+            spacing=10
+        )
+        self.room_qr_button = Button(
+            text='Room QR',
+            size_hint_x=0.5,
+            font_size='15sp',
+            size_hint_y=None,
+            height='55dp',
+            background_color=[0.3, 0.6, 0.9, 1]
+        )
+        self.room_qr_button.bind(on_release=self.show_room_qr)
+        self.scan_qr_button = Button(
+            text='Scan QR',
+            size_hint_x=0.5,
+            font_size='15sp',
+            size_hint_y=None,
+            height='55dp'
+        )
+        self.scan_qr_button.bind(on_release=self.scan_qr)
+        qr_row.add_widget(self.room_qr_button)
+        qr_row.add_widget(self.scan_qr_button)
+        layout.add_widget(qr_row)
+
         # Big spacer before saved rooms
         layout.add_widget(Label(size_hint_y=None, height='30dp'))
 
@@ -415,11 +447,60 @@ class ConnectionScreen(Screen):
             self.show_popup(f"Could not copy to clipboard.\n\nEncryption Key:\n{self.key_input.text}\n\n(Long press to select and copy manually)")
 
     def show_key_qr(self, instance):
-        """Show QR code for the encryption key"""
-        if not self.key_input.text.strip():
+        """Show the key-only QR (room + key) for people already on the broker"""
+        room = self.room_input.text.strip()
+        key = self.key_input.text.strip()
+        if not key:
             self.show_popup("No encryption key to show QR code for!")
             return
-            
+        if not room:
+            self.show_popup("Room name is required!")
+            return
+        fingerprint = self._fingerprint(key, room)
+        if fingerprint:
+            self._show_qr_popup('Room Key QR Code',
+                                'Scan with MQTT Chat (Scan QR)\nto import this room key',
+                                qr_exchange.build_key(room, key), fingerprint)
+
+    def show_room_qr(self, instance):
+        """Show the full-room QR (broker, login, room, key) so a new user can join with one scan"""
+        server = self.server_input.text.strip()
+        room = self.room_input.text.strip()
+        key = self.key_input.text.strip()
+        try:
+            port = int(self.port_input.text.strip() or "1883")
+            if port <= 0 or port > 65535:
+                raise ValueError("Invalid port range")
+        except ValueError:
+            self.show_popup("Port must be a valid number (1-65535)!")
+            return
+        if not server or not room or not key:
+            self.show_popup("Server, room and encryption key are required for a Room QR!")
+            return
+        fingerprint = self._fingerprint(key, room)
+        if not fingerprint:
+            return
+        payload = qr_exchange.build_room(server, port, room, key,
+                                         self.mqtt_username_input.text.strip(),
+                                         self.mqtt_password_input.text.strip())
+        self._confirm(
+            'Show Room QR?',
+            "This QR contains the broker password and the room key.\n\n"
+            "Show it only to people you'd give both to.",
+            'Show QR',
+            lambda: self._show_qr_popup('Room QR Code',
+                                        'Scan with MQTT Chat (Scan QR)\nto join this room',
+                                        payload, fingerprint))
+
+    def _fingerprint(self, key, room):
+        """Fingerprint of the key as derived for this room, or None (with a popup) on error"""
+        if not chat_crypto.AVAILABLE:
+            self.show_popup("Cryptography package not available!")
+            return None
+        return chat_crypto.fingerprint(chat_crypto.key_from_input(key, room))
+
+    def _show_qr_popup(self, title, instructions_text, payload, fingerprint):
+        """Show a QR in memory only, with FLAG_SECURE, a fingerprint and a countdown"""
         try:
             # Import QR code libraries
             import qrcode
@@ -432,7 +513,7 @@ class ConnectionScreen(Screen):
                 box_size=10,
                 border=4,
             )
-            qr.add_data(self.key_input.text.strip())
+            qr.add_data(payload)
             qr.make(fit=True)
 
             # Create QR code image
@@ -443,15 +524,15 @@ class ConnectionScreen(Screen):
             qr_image.save(img_buffer, format='PNG')
             img_buffer.seek(0)
             
-            # Create Kivy image from bytes
-            kivy_image = CoreImage(img_buffer, ext='png')
+            # Create Kivy image from bytes (nocache: keep the key out of Kivy's image cache)
+            kivy_image = CoreImage(img_buffer, ext='png', nocache=True)
             
             # Create popup content
             content_layout = BoxLayout(orientation='vertical', spacing=20, padding=20)
             
             # Instructions
             instructions = Label(
-                text='Scan this QR code with any QR reader app\nto get the encryption key',
+                text=instructions_text,
                 font_size='16sp',
                 halign='center',
                 valign='middle',
@@ -467,6 +548,24 @@ class ConnectionScreen(Screen):
                 size_hint=(1, 1)
             )
             content_layout.add_widget(qr_widget)
+
+            # Fingerprint for both people to read aloud, and the auto-close countdown
+            fingerprint_label = Label(
+                text=f'Fingerprint: [b]{fingerprint}[/b]',
+                markup=True,
+                font_size='20sp',
+                size_hint_y=None,
+                height='40dp'
+            )
+            content_layout.add_widget(fingerprint_label)
+            countdown_label = Label(
+                text=f'Closes in {QR_TIMEOUT} s',
+                font_size='14sp',
+                size_hint_y=None,
+                height='30dp',
+                color=[0.7, 0.7, 0.7, 1]
+            )
+            content_layout.add_widget(countdown_label)
             
             # Close button
             close_button = Button(
@@ -479,7 +578,7 @@ class ConnectionScreen(Screen):
             
             # Create popup
             popup = Popup(
-                title='Encryption Key QR Code',
+                title=title,
                 content=content_layout,
                 size_hint=(0.9, 0.8),
                 auto_dismiss=True
@@ -495,7 +594,25 @@ class ConnectionScreen(Screen):
                 except:
                     pass
             Clock.schedule_once(update_instructions_size, 0.1)
-            
+
+            # Auto-close after QR_TIMEOUT seconds
+            remaining = [QR_TIMEOUT]
+            def tick(dt):
+                remaining[0] -= 1
+                countdown_label.text = f'Closes in {remaining[0]} s'
+                if remaining[0] <= 0:
+                    popup.dismiss()
+                    return False
+            ticker = Clock.schedule_interval(tick, 1)
+
+            # However the popup closes: stop the timer, allow screenshots again, drop the QR texture
+            def on_dismiss(*args):
+                ticker.cancel()
+                android_qr.set_secure(False)
+                qr_widget.texture = None
+            popup.bind(on_dismiss=on_dismiss)
+
+            android_qr.set_secure(True)
             popup.open()
             
         except ImportError as e:
@@ -503,6 +620,114 @@ class ConnectionScreen(Screen):
         except Exception as e:
             print(f"QR code generation error: {e}")
             self.show_popup(f"Error generating QR code: {e}")
+
+    def scan_qr(self, instance):
+        """Scan a room or key QR with the camera (Android only)"""
+        if not android_qr.scan(self._on_qr_scanned, self.show_popup):
+            self.show_popup("Scanning is only available on Android.")
+
+    def _on_qr_scanned(self, text):
+        """Validate a scanned payload and ask the user to confirm the import"""
+        if text is None:
+            return  # scan cancelled
+        try:
+            data = qr_exchange.parse(text)
+        except ValueError as e:
+            self.show_popup(str(e))
+            return
+        fingerprint = self._fingerprint(data["key"], data["room"])
+        if not fingerprint:
+            return
+        # Scanned text is untrusted: escape it for the markup label
+        room = escape_markup(data['room'])
+        if data["type"] == qr_exchange.TYPE_ROOM:
+            details = (f"Room: {room}\nServer: {escape_markup(data['host'])}:{data['port']}\n"
+                       f"MQTT user: {escape_markup(data['mqtt_user']) or '(anonymous)'}")
+        else:
+            details = f"Room key for: {room}"
+        self._confirm(
+            'Import from QR?',
+            f"{details}\n\nFingerprint: [b]{fingerprint}[/b]\n\n"
+            "Check it matches the other person's screen.",
+            'Import',
+            lambda: self._import_qr(data))
+
+    def _import_qr(self, data):
+        """Fill the form from a confirmed QR payload"""
+        room = data["room"]
+        self.room_input.text = room
+        self.key_input.text = data["key"]
+        if data["type"] == qr_exchange.TYPE_ROOM:
+            self.server_input.text = data["host"]
+            self.port_input.text = str(data["port"])
+            self.mqtt_username_input.text = data["mqtt_user"]
+            self.mqtt_password_input.text = data["mqtt_pass"]
+            # The QR never carries a chat name: the receiver picks their own
+            self.username_input.text = ''
+            self.show_popup("Room imported.\n\nEnter your name, then tap Connect.")
+            return
+        # Key-only: also update the saved room of that name, if there is one
+        file_path = os.path.join(ROOMS_DIR, f"{room}.json")
+        if os.path.basename(room) == room and os.path.exists(file_path):
+            try:
+                with open(file_path, 'r') as f:
+                    saved = json.load(f)
+                saved["key"] = data["key"]
+                with open(file_path, 'w') as f:
+                    json.dump(saved, f, indent=2)
+                self.show_popup(f"Key imported and saved room '{room}' updated.")
+            except Exception as e:
+                self.show_popup(f"Key imported, but saving room '{room}' failed: {e}")
+        else:
+            self.show_popup(f"Key imported for room '{room}'.")
+
+    def _confirm(self, title, message, ok_text, on_ok):
+        """Two-button confirmation popup; calls on_ok() if confirmed"""
+        content_layout = BoxLayout(orientation='vertical', spacing=20, padding=20)
+        message_label = Label(
+            text=message,
+            markup=True,
+            font_size='16sp',
+            halign='center',
+            valign='middle',
+            text_size=(None, None)
+        )
+        content_layout.add_widget(message_label)
+        button_layout = BoxLayout(
+            orientation='horizontal',
+            size_hint_y=None,
+            height='60dp',
+            spacing=15
+        )
+        cancel_button = Button(
+            text='Cancel',
+            size_hint_x=0.5,
+            font_size='16sp',
+            background_color=[0.5, 0.5, 0.5, 1]
+        )
+        ok_button = Button(
+            text=ok_text,
+            size_hint_x=0.5,
+            font_size='16sp'
+        )
+        button_layout.add_widget(cancel_button)
+        button_layout.add_widget(ok_button)
+        content_layout.add_widget(button_layout)
+        popup = Popup(
+            title=title,
+            content=content_layout,
+            size_hint=(0.9, 0.6),
+            auto_dismiss=False
+        )
+        cancel_button.bind(on_release=popup.dismiss)
+        def confirmed(instance):
+            popup.dismiss()
+            on_ok()
+        ok_button.bind(on_release=confirmed)
+        def update_label_size(dt):
+            message_label.text_size = (popup.width - 40, None)
+        Clock.schedule_once(update_label_size, 0.1)
+        popup.open()
 
     def copy_room_config(self, instance):
         """Copy room configuration as shareable text"""
