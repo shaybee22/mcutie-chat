@@ -23,12 +23,17 @@ python3 chat_crypto.py
 source ~/.venvs/buildozer/bin/activate          # must be activated (VIRTUAL_ENV set), not just on PATH
 export PATH="$HOME/.cargo/bin:$PATH"            # rustup/cargo: p4a builds cryptography from source
 export PIP_NO_BINARY=charset-normalizer         # see the comment above `requirements` in buildozer.spec
+rm -rf .buildozer/android/platform/build-arm64-v8a/build/venv   # p4a corrupts this venv on every rebuild
 yes | buildozer android debug                   # `yes` accepts the SDK licences on first run
 
-# Install and launch on the USB-attached phone (WSL's /usr/bin/adb sees it)
+# Install and launch on the phone. If WSL's `adb devices` is empty (phone attached to Windows,
+# not via usbipd), use Windows' adb.exe with a Windows path: adb.exe install -r "$(wslpath -w bin/...apk)"
 adb install -r bin/mqttchat-0.3-arm64-v8a-debug.apk
 adb shell monkey -p org.example.mqttchat -c android.intent.category.LAUNCHER 1
 adb logcat -s python:* SDL:* AndroidRuntime:*
+
+# Run the app on the desktop (WSLg). Kivy 2.3.1 has no Python 3.14 wheels, so use the 3.12 venv
+~/.venvs/mqttdesk/bin/python main.py
 
 # Headless test peer (venv: ~/.venvs/mqttpeer with paho-mqtt 2.1.0 + cryptography)
 CHAT_KEY=... MQTT_PASSWORD=... ~/.venvs/mqttpeer/bin/python tools/test_peer.py \
@@ -38,7 +43,10 @@ CHAT_KEY=... MQTT_PASSWORD=... ~/.venvs/mqttpeer/bin/python tools/test_peer.py \
 Build quirks (all with p4a master + Python 3.14 host, Oct 2026):
 - `kivy` is pinned to 2.3.1 because p4a's kivy recipe patches that release; `kivy==master` fails at patching.
 - arm64-v8a only: `cryptography` fails to build for armeabi-v7a (p4a passes host x86_64 Python headers → `LONG_BIT` error).
-- If the build fails with `ImportError: cannot import name 'BuildDependencyInstallError'`, p4a's cached build venv has a half-upgraded pip: `rm -rf .buildozer/android/platform/build-arm64-v8a/build/venv`.
+- p4a's build venv (`.buildozer/.../build/venv`) ends up with a half-upgraded pip on every rebuild (`ImportError: cannot import name 'BuildDependencyInstallError'`); delete it before each build, as in the commands above.
+- `cryptography` uses a local recipe override (`p4a-recipes/cryptography/`, via `p4a.local_recipes`) that links its Rust extension against libpython; without it the module fails to load on Android (`cannot locate symbol "PyExc_TypeError"`).
+- p4a's resolver only honours pins written with underscores (`paho_mqtt==2.1.0`, `charset_normalizer`); a hyphenated name gets the latest wheel added as well.
+- p4a reuses the built dist in `.buildozer/android/platform/build-arm64-v8a/dists/mqttchat`; after changing a recipe, delete that dist and the recipe's `build/other_builds/<recipe>` directory, or the APK won't change.
 
 A local broker (e.g. `mosquitto` on `localhost:1883`, the UI defaults) is needed to exercise the chat flow.
 
@@ -72,33 +80,13 @@ Own messages are rendered locally on send; incoming messages from the same usern
 
 Saved rooms are JSON files in `rooms/` relative to the working directory (created at import time of `connection_screen.py`). They store the encryption key and MQTT password in plaintext.
 
-## Current status (paused 2026-10-11)
+## Current status (2026-11-04)
 
-The work is split into four phases (1: AES-256-GCM crypto, 2: TLS, 3: QR export, 4: QR camera import). Do one phase at a time and stop after each so the user can test. Use plan mode before editing, and keep changes surgical. The desktop client is deferred: change only the mobile app, and keep `PROTOCOL.md` exact so it can be ported later.
+The work is split into four phases (1: AES-256-GCM crypto, 2: TLS, 3: QR export, 4: QR camera import). The user has since added an in-person QR key exchange feature (FLAG_SECURE, auto-dismiss, read-aloud fingerprint), which overlaps Phases 3 and 4. Do one step at a time and stop after each so the user can test. Use plan mode before editing, keep changes surgical, and commit after each step. The separate desktop client is deferred: change only this app, and keep `PROTOCOL.md` exact so it can be ported later.
 
-**Done (Phase 1, code complete):**
-- `chat_crypto.py` provides AES-256-GCM with a version byte and a random 96-bit nonce. A generated 256-bit key is used raw; a passphrase goes through scrypt with a room-derived salt. Fernet and the SHA-256 `derive_key` are gone.
-- `main.py` and `connection_screen.py` call into it. `PROTOCOL.md` documents the format, with test vectors.
-- `tools/test_peer.py` is a headless peer that joins a room and sends and receives messages.
-- `buildozer.spec` builds: paho-mqtt 2.1.0, kivy 2.3.1, arm64 only, `tools/` excluded, charset_normalizer workaround.
+**Phase 1: done and tested on hardware.** The Phase 1 APK runs on the user's Razr (arm64). In room `chatty` on the test broker, phone ↔ desktop messaging works in both directions: desktop = this app under WSLg, verified with a decrypting observer `tools/test_peer.py` and logcat, with no decrypt errors. Broker credentials and the test key live only in the gitignored `rooms/chatty.json` (desktop) and the phone app's own `rooms/` (pushed with `run-as`), never in git.
 
-**Tested:**
-- `python3 chat_crypto.py`: the self-test passes, and the PROTOCOL.md test vector decrypts.
-- All modules compile.
-- The debug APK builds successfully, and its app code (`chat_crypto`, `main`) is in the bundle.
-
-**NOT tested yet:**
-- The APK has never been installed or launched on the phone, and logcat has not been checked.
-- Connect, and two-way messaging between the phone and `tools/test_peer.py` against a live broker. The user's broker on port 1883 was unreachable from WSL, Windows and the phone: the host answers SSH, but MQTT ports time out.
-- The test peer has not completed a run, because its only attempt timed out on that broker.
-- The desktop app has not been run with Kivy. Kivy is not installed in WSL.
-
-**Known issue (not fixed):** the APK bundles `chardet` 7.6.0 (a Kivy → requests dependency) as x86_64 `.so` files, which can't load on ARM. The app doesn't import `chardet` or `requests`, so it probably doesn't matter yet, but check logcat for it. The fix is the same pure-Python approach used for charset_normalizer.
-
-**Next steps to resume:**
-1. Confirm that the broker is reachable: `timeout 5 bash -c 'echo > /dev/tcp/<broker>/1883'`.
-   - If the broker can't be fixed, run a local broker in WSL and use `adb reverse tcp:1883 tcp:1883`. The phone then connects to `localhost:1883`.
-2. Build the APK (commands above), then `adb install -r`, launch it, and watch logcat. Fix any startup errors and repeat.
-3. To avoid typing the key on the phone, push a saved-room JSON file into the app's `rooms/` directory with `adb shell run-as org.example.mqttchat` (the debug APK is debuggable). The user then picks it from Load Room.
-4. Run `tools/test_peer.py` in the same room. Confirm that phone → peer and peer → phone both work, using the peer's output and logcat. The user watches with MQTT Explorer.
-5. Report the results and stop. Start Phase 2 (TLS) only when the user says so.
+**Known issues:**
+- The APK bundles `chardet` 7.6.0 (Kivy → requests) as x86_64 `.so` files. Nothing imports it; logcat is clean.
+- `main.py` uses paho's deprecated callback API v1, which logs a warning.
+- The user's separate desktop client still speaks the old Fernet format, so it can't read Phase 1 messages.
