@@ -1,9 +1,11 @@
-# MQChat for Linux 🐧💬🔐
+# Mcutie Chat for Linux 🐧💬🔐
 
 **Portable Encrypted Group Chat over MQTT**
 By James Powell (aka shaybee22)
 
-MQChat is a cross-platform, end-to-end encrypted group chat client that uses MQTT as the relay server. This version is built for Linux systems and can be compiled into a single, portable executable using PyInstaller—no Python installation required on the target machine!
+Mcutie Chat (formerly MQChat) is a cross-platform, end-to-end encrypted group chat client that uses MQTT as the relay server. This version is built for Linux systems and can be compiled into a single, portable executable using PyInstaller—no Python installation required on the target machine!
+
+> ⚠️ This desktop client still uses the old Fernet message format and can't talk to the current Android app until it's ported. See the [compatibility note](../README.md).
 
 ---
 
@@ -46,13 +48,13 @@ This will:
 * Compile `mqchat.py` into a standalone executable
 * Output it in a `portable/` directory
 
-Once complete, you’ll have a single binary file named `MQChat` that can be copied to other Linux systems.
+Once complete, you’ll have a single binary file named `McutieChat` that can be copied to other Linux systems.
 
 ### Manual Build:
 
 ```bash
 pip3 install pyinstaller
-pyinstaller --onefile --windowed --name="MQChat" --distpath="./portable" mqchat.py
+pyinstaller --onefile --windowed --name="McutieChat" --distpath="./portable" mqchat.py
 ```
 
 ---
@@ -62,7 +64,7 @@ pyinstaller --onefile --windowed --name="MQChat" --distpath="./portable" mqchat.
 Once built, run it like so:
 
 ```bash
-./portable/MQChat
+./portable/McutieChat
 ```
 
 You can also run it directly from Python (if you don't need portability):
@@ -76,7 +78,7 @@ python3 mqchat.py
 ## 📁 File Overview
 
 ```
-📁 MQTTChat_Linux/
+📁 Linux/
 ├── mqchat.py                  # Main app
 ├── build_mqchat.sh    # Bash script to build Linux executable
 ├── portable/                  # Output folder for standalone binary (created at build)
@@ -94,7 +96,7 @@ MIT Non-Commercial License – Personal use only. Commercial use or resale requi
 
 **James Powell** (shaybee22)
 Check out the full project and other platform versions at:
-[https://github.com/shaybee22/MQTTChat](https://github.com/shaybee22/MQTTChat)
+[https://github.com/shaybee22/mcutie-chat](https://github.com/shaybee22/mcutie-chat)
 
 If you enjoy it, give it a ⭐ and share it with fellow Linux geeks!
 
