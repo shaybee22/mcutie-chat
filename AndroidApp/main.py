@@ -1,7 +1,6 @@
 import paho.mqtt.client as mqtt
 import json
-import base64
-import hashlib
+import secrets
 import time
 import threading
 from kivy.app import App
@@ -11,22 +10,21 @@ from connection_screen import ConnectionScreen
 from chat_screen import MQTTChatScreen
 from datetime import datetime
 
-# Import cryptography for proper encryption
-try:
-    from cryptography.fernet import Fernet
-    ENCRYPTION_AVAILABLE = True
-except ImportError:
+# AES-256-GCM message encryption (see chat_crypto.py / PROTOCOL.md)
+import chat_crypto
+import tls_config
+ENCRYPTION_AVAILABLE = chat_crypto.AVAILABLE
+if not ENCRYPTION_AVAILABLE:
     print("Warning: cryptography package not available. Install with: pip install cryptography")
-    ENCRYPTION_AVAILABLE = False
-    Fernet = None
 
 class MQTTChatApp(App):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.mqtt_client = None
         self.username = "User"  # Chat display name
-        self.cipher = None  # Encryption cipher
+        self.key = None  # 32-byte AES-256-GCM key
         self.connected = False
+        self.client_id = None  # random per connection, see connect_to_mqtt
         self.channel = ""
         self.heartbeat_timer = None
         self.online_users = set()
@@ -38,6 +36,7 @@ class MQTTChatApp(App):
         self.userlist_topic = ""
         
     def build(self):
+        self.title = "Mcutie Chat"  # window/task title (Kivy would otherwise derive "MQTTChat")
         # Create screen manager
         self.screen_manager = ScreenManager()
         
@@ -54,16 +53,8 @@ class MQTTChatApp(App):
         
         return self.screen_manager
     
-    def derive_key(self, password):
-        """Derive a Fernet key from a password (same as desktop version)"""
-        if not ENCRYPTION_AVAILABLE:
-            return None
-        # Use SHA256 to create a 32-byte key, then base64 encode for Fernet
-        hash_obj = hashlib.sha256(password.encode())
-        key = base64.urlsafe_b64encode(hash_obj.digest())
-        return key
-    
-    def connect_to_mqtt(self, server, port, room, encryption_key, mqtt_username=None, mqtt_password=None):
+    def connect_to_mqtt(self, server, port, room, encryption_key, mqtt_username=None, mqtt_password=None,
+                        tls=False, ca_pem=""):
         """Connect to MQTT broker with full encryption and authentication"""
         try:
             self.channel = room
@@ -77,17 +68,20 @@ class MQTTChatApp(App):
                 Clock.schedule_once(lambda dt: self.show_error("Encryption key is required!"))
                 return
             
-            # Setup encryption (same method as desktop)
-            key = self.derive_key(encryption_key)
-            self.cipher = Fernet(key)
-            
             # Setup topics (same as desktop)
             self.messages_topic = f"chat/{self.channel}/messages"
             self.presence_topic = f"chat/{self.channel}/presence"
             self.userlist_topic = f"chat/{self.channel}/users"
             
+            # Setup encryption: generated key used directly, otherwise scrypt passphrase
+            self.key = chat_crypto.key_from_input(encryption_key, room)
+            
             # Create MQTT client (fix deprecation warning like desktop)
-            self.mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
+            # Random per connection (never derived from the name or room config), so two people
+            # using the same room QR - or a stale client from an earlier connection - never share
+            # a client ID and kick each other off the broker
+            self.client_id = "mqttchat-" + secrets.token_hex(8)
+            self.mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, client_id=self.client_id)
             self.mqtt_client.on_connect = self.on_mqtt_connect
             self.mqtt_client.on_message = self.on_mqtt_message
             self.mqtt_client.on_disconnect = self.on_mqtt_disconnect
@@ -103,8 +97,12 @@ class MQTTChatApp(App):
             will_msg = json.dumps({"user": self.username, "status": "offline", "timestamp": time.time()})
             self.mqtt_client.will_set(f"{self.presence_topic}/{self.username}", will_msg, retain=True)
             
+            # TLS: pinned to the room's CA if it has one, else the certifi list; never unverified
+            if tls:
+                self.mqtt_client.tls_set_context(tls_config.make_ssl_context(ca_pem or None))
+            
             # Connect
-            print(f"Connecting to {server}:{port}")
+            print(f"Connecting to {server}:{port}" + (" (TLS)" if tls else ""))
             self.mqtt_client.connect(server, port, 60)
             self.mqtt_client.loop_start()
             
@@ -177,9 +175,8 @@ class MQTTChatApp(App):
     def handle_chat_message(self, encrypted_payload):
         """Handle incoming chat message (same decryption as desktop)"""
         try:
-            # Decrypt message (same as desktop)
-            encrypted_data = base64.b64decode(encrypted_payload.encode())
-            decrypted_data = self.cipher.decrypt(encrypted_data)
+            # Decrypt message (AES-256-GCM, bound to this room's topic)
+            decrypted_data = chat_crypto.decrypt(self.key, encrypted_payload, self.messages_topic)
             message_data = json.loads(decrypted_data.decode())
             
             username = message_data.get("user", "Unknown")
@@ -266,10 +263,9 @@ class MQTTChatApp(App):
                 "timestamp": time.time()
             }
             
-            # Encrypt message (same method as desktop)
+            # Encrypt message (AES-256-GCM, bound to this room's topic)
             json_data = json.dumps(message_data)
-            encrypted_data = self.cipher.encrypt(json_data.encode())
-            encrypted_payload = base64.b64encode(encrypted_data).decode()
+            encrypted_payload = chat_crypto.encrypt(self.key, json_data.encode(), self.messages_topic)
             
             # Publish to MQTT
             self.mqtt_client.publish(self.messages_topic, encrypted_payload)
@@ -311,9 +307,10 @@ class MQTTChatApp(App):
                     time.sleep(0.5)  # Give time for message to send
                     self.clear_my_presence()
                     
-                    # Stop the MQTT loop and disconnect
-                    self.mqtt_client.loop_stop()
+                    # Disconnect, then stop the MQTT loop (in this order so the DISCONNECT
+                    # packet is actually sent: a clean disconnect doesn't fire the Last Will)
                     self.mqtt_client.disconnect()
+                    self.mqtt_client.loop_stop()
                     
                 # Cancel timers
                 if self.heartbeat_timer:
@@ -329,8 +326,8 @@ class MQTTChatApp(App):
                 # Update GUI in main thread
                 Clock.schedule_once(lambda dt: self._finish_disconnect())
         
-        # Update status immediately
-        self.connected = False
+        # Note: don't clear self.connected here - the worker checks it to decide whether to
+        # disconnect; _finish_disconnect and on_mqtt_disconnect reset it afterwards
         
         # Run disconnect in background thread to avoid GUI freeze
         disconnect_thread = threading.Thread(target=_disconnect_worker, daemon=True)
@@ -345,9 +342,9 @@ class MQTTChatApp(App):
             self.mqtt_client = None
     
     def show_error(self, message):
-        """Show error message (can be implemented as popup or system message)"""
+        """Show an error popup (callers already run this on the Kivy thread)"""
         print(f"Error: {message}")
-        # For now, just print. Could be enhanced with popup later.
+        self.connection_screen.show_popup(message)
 
 if __name__ == '__main__':
     MQTTChatApp().run()
