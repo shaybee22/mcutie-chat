@@ -3,7 +3,7 @@
 Welcome to the **Android Kivy version** of [Mcutie Chat](https://github.com/shaybee22/mcutie-chat/), a fully encrypted MQTT-based group chat app, optimized for mobile devices using **Kivy** and **Buildozer**.
 
 > ✅ **The desktop client and the Android app talk to each other.** Both speak Mcutie Chat protocol v1 ([AndroidApp/PROTOCOL.md](PROTOCOL.md)): AES-256-GCM messages, in-person Room/Key QR exchange, and optional TLS to the broker.
-> Clients from before protocol v1 (the old Fernet format) can't read v1 messages, so update every device in a room. **No release yet.**
+> Clients from before protocol v1 (the old Fernet format) can't read v1 messages, so update every device in a room. **Latest release: [v1.0.0](https://github.com/shaybee22/mcutie-chat/releases/tag/v1.0.0)** (signed APK for arm64).
 
 ---
 

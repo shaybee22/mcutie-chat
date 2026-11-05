@@ -118,7 +118,8 @@ Saved rooms are JSON files in `rooms/` relative to the working directory (create
 - #3: the desktop client on protocol v1;
 - #4: saved rooms no longer packed into the APK;
 - #6: release prep: root `.gitignore` (desktop saved rooms, PyInstaller output, keystores), version `1.0.0`, release artifact `apk`;
-- #7: README points to the v1.0.0 release.
+- #7: README points to the v1.0.0 release;
+- #9: root `README.md` rewritten for v1.0.0 (what it is, encryption, QR exchange, downloads, Linux from source, own broker). It links to `AndroidApp/README.md`, `Linux/README.md`, `BROKER-SETUP.md` and `PROTOCOL.md` instead of repeating them; keep it that way, and update its download links on each release.
 
 **Tested on hardware:**
 - The signed release APK on the phone (after uninstalling the debug build): connect, messages, Room QR scan, Disconnect → Connect.

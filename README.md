@@ -1,142 +1,149 @@
 # Mcutie Chat 💬🔒
 
-**Encrypted Group Chat over MQTT**
-Created by James Powell
+**End-to-end encrypted group chat over your own MQTT broker.**
+By James Powell (shaybee22)
 
-Mcutie Chat (formerly MQChat / MQTT Chat) is a lightweight, secure group chat application that uses MQTT as its message relay protocol. Designed for privacy and simplicity, it features end-to-end encryption, room presets, presence tracking, and a GUI-friendly interface built with Python and Tkinter.
+Mcutie Chat is a small group chat for people who want to run it themselves. Messages travel through an ordinary [MQTT](https://mqtt.org/) broker, for example [Mosquitto](https://mosquitto.org/) on a cheap VPS, but they're encrypted on your device. The broker only ever sees ciphertext. There are no accounts and no central server: a room is just a name plus a key that everyone in it shares.
 
-> ✅ **The desktop client and the Android app talk to each other.** Both speak Mcutie Chat protocol v1 ([AndroidApp/PROTOCOL.md](AndroidApp/PROTOCOL.md)): AES-256-GCM messages, in-person Room/Key QR exchange, and optional TLS to the broker.
-> Clients from before protocol v1 (the old Fernet format) can't read v1 messages, so update every device in a room. **Latest release: [v1.0.0](https://github.com/shaybee22/mcutie-chat/releases/tag/v1.0.0)** (Android APK and Windows `.exe`).
+There are two clients, and they talk to each other:
+- **Android app** (Kivy), with a camera QR scanner;
+- **Desktop client** (Python/Tkinter) for Windows and Linux.
 
----
-
-## 🧠 Key Features
-
-* 🔐 End-to-end encrypted messages (AES-256-GCM), the same on desktop and Android
-* 📷 Share a room in person with a Room QR or Key QR, checked with a read-aloud fingerprint
-* 🔒 Optional TLS to the broker (pinned CA for self-signed brokers, or public CAs)
-* 🌐 MQTT-based real-time message relay
-* 👤 Presence tracking (online/offline status)
-* 💾 Save and load favorite chat rooms
-* 📋 GUI with tabs for Connection, Chat, and Room Management
-* 🛠️ Support for MQTT authentication (optional)
-* 🚀 Quick Connect and saved room profiles
-* 📥 Import/Export chat room configurations
-* ✅ Compatible with anonymous or authenticated MQTT brokers
+**Latest release: [v1.0.0](https://github.com/shaybee22/mcutie-chat/releases/tag/v1.0.0)**
 
 ---
 
-## 🖥️ Desktop App (Python)
+## ⬇️ Download
 
-### 🛠 Requirements
+| Platform | File | Notes |
+|---|---|---|
+| Android (64-bit ARM) | [mcutiechat-1.0.0-arm64-v8a-release.apk](https://github.com/shaybee22/mcutie-chat/releases/download/v1.0.0/mcutiechat-1.0.0-arm64-v8a-release.apk) | Allow installs from unknown sources. If you had a test build installed before, uninstall it first: the signing key is different. Uninstalling deletes that build's saved rooms. |
+| Windows (64-bit) | [McutieChat-1.0.0-windows-x64.exe](https://github.com/shaybee22/mcutie-chat/releases/download/v1.0.0/McutieChat-1.0.0-windows-x64.exe) | Portable: nothing to install, and no Python needed. It's unsigned, so SmartScreen may warn you ("More info → Run anyway"). |
+| Linux | [run from source](#-running-from-source-linux) | Or build a single-file binary: see [Linux/README.md](Linux/README.md). |
 
-* Python 3.x
-* `paho-mqtt`, `cryptography`, `qrcode`, `pillow`, `certifi`
-* `tkinter` (included with most Python installations; `python3-tk` on Debian/Ubuntu)
+Checksums are in [`SHA256SUMS.txt`](https://github.com/shaybee22/mcutie-chat/releases/download/v1.0.0/SHA256SUMS.txt) on the release page.
 
-The desktop client is one file, `mqchat.py`, for Windows and Linux. Its protocol code is shared with the Android app (`AndroidApp/`), so keep the repo together.
-
-### 📦 Installation
-
-1. Clone the repo:
-
-   ```bash
-   git clone https://github.com/shaybee22/mcutie-chat.git
-   cd mcutie-chat
-   ```
-
-2. Install dependencies:
-
-   ```bash
-   pip install paho-mqtt cryptography qrcode pillow certifi
-   ```
-
-3. Run the app:
-
-   ```bash
-   python mqchat.py
-   ```
-
-[View the code on GitHub](https://github.com/shaybee22/mcutie-chat/blob/main/mqchat.py)
+You'll also need a broker. You can [host your own](#-hosting-your-own-broker) or use any MQTT broker you have access to.
 
 ---
 
-## 📦 Creating a Portable Windows Executable
+## 🔐 How room encryption works
 
-You can generate a self-contained `.exe` using `pyinstaller` and the included batch script.
+Every room has a **room key**, which you either:
+- **generate**: a random 256-bit key (the **Generate** button), recommended; or
+- **type in as a passphrase**: it's stretched with scrypt, salted with the room name. A weak passphrase is still weak, so prefer a generated key.
 
-### 🔧 One-click Build (Windows)
+Every message is encrypted on the sending device with **AES-256-GCM**:
+- each message gets a fresh random nonce;
+- the room's topic is bound into the encryption, so a message can't be replayed into another room;
+- anyone without the key, including the broker, sees only random-looking bytes. A tampered message is rejected, not shown.
 
-1. Install [PyInstaller](https://pyinstaller.org/):
+Each key has a **fingerprint** like `273B-2CAF-623A-EBA8`. Two people who see the same fingerprint have the same key. Read it aloud to each other to check.
 
-   ```bash
-   pip install pyinstaller
-   ```
+Optionally, the connection to the broker can use **TLS**, which also hides your broker password and the room names in transit. For a self-signed broker, a room can pin its own CA certificate. Without one, the app trusts the usual public CAs.
 
-2. Run the batch script:
+**What the broker can still see:**
+- room names, because they're in the MQTT topics;
+- display names and who is online, because presence messages are not encrypted;
+- when messages are sent, and how big they are.
 
-   ```bash
-   build_mqchat.bat
-   ```
-
-This will compile `mqchat.py` into a portable `McutieChat.exe` inside the `portable/` folder.
-
-[View the batch script](https://github.com/shaybee22/mcutie-chat/blob/main/build_mqchat.bat)
+The full wire format is in [AndroidApp/PROTOCOL.md](AndroidApp/PROTOCOL.md).
 
 ---
 
-## 🖧 Run Your Own Broker
+## 📷 Sharing a room in person: QR codes
 
-On a fresh Ubuntu server:
+Never send room keys over email or another chat app. Show a QR code instead:
+
+| QR | Contains | Use it for |
+|---|---|---|
+| **Key QR** | Room name + key | Someone who is already set up on the same broker |
+| **Room QR** | Broker address, port, TLS setting and CA, MQTT login, room name + key | A new user: one scan and they only need to type their own name |
+
+1. On the device that already has the room, press **Key QR** or **Room QR**.
+2. On the other phone, press **Scan QR**. On a desktop, which can't scan, use **Import QR text...** and paste the QR's contents.
+3. The receiver sees the fingerprint and must confirm the import. Compare fingerprints out loud.
+
+The QR codes are designed to show only briefly:
+- they're never saved to a file;
+- they close after 60 seconds;
+- on Android, screenshots are blocked while one is on screen. Desktops can't block screenshots, so close the window when you're done.
+
+A Room QR contains your MQTT password, so treat it like the password itself.
+
+---
+
+## 🐧 Running from source (Linux)
+
+You need Python 3 with Tk:
+
+```bash
+sudo apt install python3-tk python3-venv          # Debian/Ubuntu
+git clone https://github.com/shaybee22/mcutie-chat.git
+cd mcutie-chat
+python3 -m venv .venv && . .venv/bin/activate
+pip install paho-mqtt cryptography qrcode pillow certifi
+python3 mqchat.py
+```
+
+The desktop client is the single file `mqchat.py`. It imports its encryption, QR and TLS code from `AndroidApp/`, the same code the Android app uses, so keep the repo together. The same steps work on Windows with `python mqchat.py`.
+
+To build a portable binary yourself:
+- **Linux:** follow [Linux/README.md](Linux/README.md).
+- **Windows:** run `build_mqchat.bat` from a normal Windows folder. It can't be run from a `\\wsl.localhost\...` path. The result is `portable\McutieChat.exe`.
+
+To build the Android app, see [AndroidApp/README.md](AndroidApp/README.md).
+
+---
+
+## 🖧 Hosting your own broker
+
+On a fresh Ubuntu server (a VPS, droplet or VM):
 
 ```bash
 git clone https://github.com/shaybee22/mcutie-chat && cd mcutie-chat && sudo ./install.sh
 ```
 
-It installs mosquitto with password logins, optional TLS (Let's Encrypt or a self-signed CA) and a firewall, tests it, and prints the settings to enter in the app. See [BROKER-SETUP.md](BROKER-SETUP.md).
+The installer:
+- installs Mosquitto with password logins only (anonymous access is turned off);
+- sets up TLS with **Let's Encrypt** (needs a domain), a **self-signed CA** (works with a bare IP), or no TLS;
+- configures the firewall;
+- tests the broker;
+- prints the settings to type into the app.
+
+Add more users later with `sudo ./install.sh --add-user`.
+
+After that, set up one device by hand, and share the room with everyone else using a **Room QR**.
+
+Details, all the options and troubleshooting: [BROKER-SETUP.md](BROKER-SETUP.md).
 
 ---
 
-## 📱 Android Version
+## 📚 More documentation
 
-An Android version of Mcutie Chat is available! It's written using Kivy and Buildozer for packaging. It has AES-256-GCM messages, in-person QR key/room exchange, and TLS to the broker (see [AndroidApp/README.md](AndroidApp/README.md)).
-
-📂 [View the Android App on GitHub](https://github.com/shaybee22/mcutie-chat/tree/main/AndroidApp)
-
-Inside the AndroidApp folder, you'll find installation and build instructions using **Buildozer**.
-
----
-
-## 📁 File Structure
-
-```
-📁 mcutie-chat/
-├── mqchat.py                 # Main Python desktop app
-├── build_mqchat.bat          # Batch script to create Windows .exe
-├── Linux/                    # Linux desktop version + build script
-├── mqtt_chat_rooms.json      # Encrypted saved room profiles (created at runtime)
-├── AndroidApp/               # Android version using Kivy/Buildozer
-├── LICENSE                   # Custom MIT Non-Commercial License
-└── README.md                 # You're reading it!
-```
+| | |
+|---|---|
+| [AndroidApp/README.md](AndroidApp/README.md) | Android app: features, building with Buildozer |
+| [Linux/README.md](Linux/README.md) | Desktop client on Linux: building the portable binary |
+| [BROKER-SETUP.md](BROKER-SETUP.md) | Self-hosted Mosquitto broker with `install.sh` |
+| [AndroidApp/PROTOCOL.md](AndroidApp/PROTOCOL.md) | Wire protocol v1: topics, encryption, key rules, QR formats, TLS trust |
 
 ---
 
-## 🔒 Security Note
+## ⚠️ Known limitations
 
-Both clients use **AES-256-GCM** with generated 256-bit keys or scrypt-derived passphrases, and support TLS to the broker (see [AndroidApp/PROTOCOL.md](AndroidApp/PROTOCOL.md)). Only users with the same room key can read each other's messages. Share keys in person (Room/Key QR) and compare the fingerprint, never over insecure channels.
-
-- The Android app blocks screenshots while a QR is shown; desktops can't, so close the QR window when you're done.
-- The desktop client's saved-rooms file (`mqtt_chat_rooms.json`) is obfuscated with a key built into the code, **not** protected: anyone with access to that file can read the room keys and broker passwords. Keep it private.
+- Clients from before protocol v1 (the old Fernet-based MQTT Chat) can't talk to v1. Update every device in a room.
+- The desktop client's saved rooms (`mqtt_chat_rooms.json`, in the folder you start it from) are obfuscated, not encrypted. Anyone who can read that file can read your room keys and broker passwords, so keep it private. Proper protection through the OS keyring is on the roadmap.
+- The Android QR scanner opens in landscape.
 
 ---
 
 ## 🔧 Roadmap
 
-* [x] Desktop client on protocol v1 (AES-256-GCM, QR exchange, TLS)
+* [x] Protocol v1 on desktop and Android (AES-256-GCM, QR exchange, TLS)
 * [x] First release (v1.0.0)
 * [ ] Protect the desktop saved-rooms file properly (OS keyring)
-* [ ] Add file/image sharing
+* [ ] File/image sharing
 * [ ] Push notifications
 * [ ] Android/Desktop cross-device syncing
 * [ ] Encrypted voice calls (stretch goal)
@@ -145,12 +152,8 @@ Both clients use **AES-256-GCM** with generated 256-bit keys or scrypt-derived p
 
 ## 📜 License
 
-This project is licensed under the [MIT Non-Commercial License](https://github.com/shaybee22/mcutie-chat/blob/main/LICENSE) — free for personal use, credit required for modifications, and written permission required for commercial or resale purposes. 🥥🌴😉
-
----
+[MIT Non-Commercial License](LICENSE): free for personal use, with credit required for modifications. Commercial use or resale needs written permission. 🥥🌴😉
 
 ## 🙋‍♂️ Author
 
-**James Powell** (a.k.a. shaybee22)
-If you enjoy this project, consider giving it a ⭐ on [GitHub](https://github.com/shaybee22/mcutie-chat)! 💙
-
+**James Powell** (a.k.a. shaybee22). If you enjoy Mcutie Chat, give it a ⭐ on [GitHub](https://github.com/shaybee22/mcutie-chat)! 💙
