@@ -6,7 +6,7 @@ Created by James Powell
 Mcutie Chat (formerly MQChat / MQTT Chat) is a lightweight, secure group chat application that uses MQTT as its message relay protocol. Designed for privacy and simplicity, it features end-to-end encryption, room presets, presence tracking, and a GUI-friendly interface built with Python and Tkinter.
 
 > ✅ **The desktop client and the Android app talk to each other.** Both speak Mcutie Chat protocol v1 ([AndroidApp/PROTOCOL.md](AndroidApp/PROTOCOL.md)): AES-256-GCM messages, in-person Room/Key QR exchange, and optional TLS to the broker.
-> Clients from before protocol v1 (the old Fernet format) can't read v1 messages, so update every device in a room. **No release yet.**
+> Clients from before protocol v1 (the old Fernet format) can't read v1 messages, so update every device in a room. **Latest release: [v1.0.0](https://github.com/shaybee22/mcutie-chat/releases/tag/v1.0.0)** (Android APK and Windows `.exe`).
 
 ---
 
@@ -134,7 +134,7 @@ Both clients use **AES-256-GCM** with generated 256-bit keys or scrypt-derived p
 ## 🔧 Roadmap
 
 * [x] Desktop client on protocol v1 (AES-256-GCM, QR exchange, TLS)
-* [ ] First release
+* [x] First release (v1.0.0)
 * [ ] Protect the desktop saved-rooms file properly (OS keyring)
 * [ ] Add file/image sharing
 * [ ] Push notifications
