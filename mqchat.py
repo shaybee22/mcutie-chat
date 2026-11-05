@@ -31,6 +31,9 @@ import chat_crypto  # noqa: E402
 import qr_exchange  # noqa: E402
 import tls_config  # noqa: E402
 
+QR_TIMEOUT = 60       # seconds a key/room QR stays on screen
+QR_MAX_VERSION = 25   # larger QR codes may not scan reliably off a screen
+
 class SecureMQTTChat:
     def _set_window_icon(self):
         """Window/taskbar icon; next to this script, or inside a PyInstaller bundle"""
@@ -172,6 +175,9 @@ class SecureMQTTChat:
                            bg="#4CAF50", fg="white")
         load_btn.pack(side=tk.LEFT, padx=5)
         
+        import_qr_btn = tk.Button(rooms_frame, text="Import QR text...", command=self.import_qr_text)
+        import_qr_btn.pack(side=tk.LEFT, padx=5)
+        
         # Configuration frame
         config_frame = tk.LabelFrame(self.connection_frame, text="Manual Configuration", 
                                     font=("Arial", 10, "bold"))
@@ -254,6 +260,12 @@ class SecureMQTTChat:
         show_key_btn = tk.Checkbutton(inner_config, text="Show Key", variable=self.show_key_var, 
                                      command=self.toggle_key_visibility)
         show_key_btn.grid(row=6, column=1, sticky="w", padx=5, pady=5)
+        
+        # Share the room in person: QR codes for the app's Scan QR
+        qr_buttons_frame = tk.Frame(inner_config)
+        qr_buttons_frame.grid(row=6, column=2, padx=5, pady=5)
+        tk.Button(qr_buttons_frame, text="Key QR", command=self.show_key_qr).pack(side=tk.LEFT, padx=(0, 2))
+        tk.Button(qr_buttons_frame, text="Room QR", command=self.show_room_qr).pack(side=tk.LEFT)
         
         # Key display area (for easy copying)
         tk.Label(inner_config, text="Share this key:").grid(row=7, column=0, sticky="e", padx=5, pady=5)
@@ -802,6 +814,187 @@ class SecureMQTTChat:
         self.root.update()  # Required on some systems
         messagebox.showinfo("Copied", "Encryption key copied to clipboard!")
         
+    # ---------------------------------------------------------------- QR exchange
+    def _room_fingerprint(self, key, room):
+        return chat_crypto.fingerprint(chat_crypto.key_from_input(key, room))
+
+    @staticmethod
+    def _qr_version(payload):
+        """QR version the payload needs at error-correction level L, or None if it can't fit"""
+        import qrcode
+        from qrcode.exceptions import DataOverflowError
+        qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_L)
+        qr.add_data(payload)
+        try:
+            qr.make(fit=True)
+        except DataOverflowError:
+            return None
+        return qr.version
+
+    def show_key_qr(self):
+        """Key-only QR (room + key) for people already on the broker"""
+        room = self.channel_entry.get().strip()
+        key = self.key_entry.get().strip()
+        if not room or not key:
+            messagebox.showerror("Key QR", "Channel and encryption key are required for a Key QR.")
+            return
+        self._show_qr_window("Room Key QR Code", "Scan with Mcutie Chat (Scan QR)\nto import this room key",
+                             qr_exchange.build_key(room, key), self._room_fingerprint(key, room))
+
+    def show_room_qr(self):
+        """Full-room QR (broker, login, TLS, room, key) so a new user can join with one scan"""
+        server = self.server_entry.get().strip()
+        room = self.channel_entry.get().strip()
+        key = self.key_entry.get().strip()
+        try:
+            port = int(self.port_entry.get().strip())
+            if not 1 <= port <= 65535:
+                raise ValueError
+        except ValueError:
+            messagebox.showerror("Room QR", "Port must be a number from 1 to 65535.")
+            return
+        if not server or not room or not key:
+            messagebox.showerror("Room QR", "Server, channel and encryption key are required for a Room QR.")
+            return
+        tls_settings = self._tls_settings(self.tls_var.get(), self.get_ca())
+        if tls_settings is None:
+            return
+        tls, ca = tls_settings
+        payload = qr_exchange.build_room(server, port, room, key, self.mqtt_username_entry.get().strip(),
+                                         self.mqtt_password_entry.get().strip(), tls=tls, ca=ca)
+        version = self._qr_version(payload)
+        if version is None:
+            messagebox.showerror("Room QR", "This room's settings are too large for a QR code.\n\n"
+                                            "An EC P-256 CA certificate is much smaller than an RSA one.")
+            return
+        warning = ("This QR contains the broker password and the room key.\n\n"
+                   "Show it only to people you'd give both to.")
+        if version > QR_MAX_VERSION:
+            warning += (f"\n\nThis QR is large (version {version}) and may not scan reliably from a screen. "
+                        "An EC P-256 CA keeps it small.")
+        if not messagebox.askyesno("Show Room QR?", warning + "\n\nShow it now?"):
+            return
+        self._show_qr_window("Room QR Code", "Scan with Mcutie Chat (Scan QR)\nto join this room",
+                             payload, self._room_fingerprint(key, room))
+
+    def _show_qr_window(self, title, instructions, payload, fingerprint):
+        """QR in a window, built in memory only, with fingerprint and auto-close"""
+        import qrcode
+        from PIL import Image, ImageTk
+        qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_L, box_size=1, border=4)
+        qr.add_data(payload)
+        qr.make(fit=True)
+        # Whole pixels per module: fractional scaling makes modules uneven and unscannable
+        modules = qr.modules_count + 2 * qr.border
+        px = max(2, 480 // modules)
+        img = qr.make_image(fill_color="black", back_color="white").get_image().convert("RGB")
+        img = img.resize((modules * px, modules * px), Image.NEAREST)
+
+        win = tk.Toplevel(self.root)
+        win.title(title)
+        win.transient(self.root)
+        win.resizable(False, False)
+        tk.Label(win, text=instructions, font=("Arial", 11)).pack(padx=20, pady=(15, 8))
+        photo = ImageTk.PhotoImage(img)
+        tk.Label(win, image=photo, bd=0).pack(padx=20)
+        win.photo = photo  # keep a reference while shown
+        tk.Label(win, text=f"Fingerprint: {fingerprint}", font=("Arial", 14, "bold")).pack(pady=(10, 2))
+        countdown = tk.Label(win, text=f"Closes in {QR_TIMEOUT} s", fg="gray")
+        countdown.pack()
+        remaining = [QR_TIMEOUT]
+        timer = [None]
+
+        def close():
+            if timer[0]:
+                win.after_cancel(timer[0])
+            win.photo = None
+            win.destroy()
+
+        def tick():
+            remaining[0] -= 1
+            if remaining[0] <= 0:
+                close()
+                return
+            countdown.config(text=f"Closes in {remaining[0]} s")
+            timer[0] = win.after(1000, tick)
+
+        tk.Button(win, text="Close", width=12, command=close).pack(pady=12)
+        win.protocol("WM_DELETE_WINDOW", close)
+        timer[0] = win.after(1000, tick)
+        return win
+
+    def import_qr_text(self):
+        """Paste a Room/Key QR payload (the text a phone's QR reader shows) and import it"""
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Import from QR text")
+        dlg.transient(self.root)
+        dlg.grab_set()
+        tk.Label(dlg, text="Paste the text of a Mcutie Chat Room QR or Key QR\n"
+                           "(e.g. read with a phone's camera app):").pack(padx=15, pady=(12, 5))
+        box = tk.Text(dlg, height=8, width=70, font=("Courier", 9))
+        box.pack(padx=15)
+        box.focus_set()
+
+        def do_import():
+            text = box.get("1.0", tk.END).strip()
+            try:
+                data = qr_exchange.parse(text)
+            except ValueError as e:
+                messagebox.showerror("Import from QR text", str(e), parent=dlg)
+                return
+            fingerprint = self._room_fingerprint(data["key"], data["room"])
+            if data["type"] == qr_exchange.TYPE_ROOM:
+                if not data["tls"]:
+                    tls_text = "off"
+                elif data["ca"]:
+                    tls_text = f"on, CA: {tls_config.describe_ca(data['ca'])}"
+                else:
+                    tls_text = "on, publicly trusted CAs"
+                details = (f"Room: {data['room']}\nServer: {data['host']}:{data['port']}\n"
+                           f"MQTT user: {data['mqtt_user'] or '(anonymous)'}\nTLS: {tls_text}")
+            else:
+                details = f"Room key for: {data['room']}"
+            if not messagebox.askyesno("Import from QR?", f"{details}\n\nFingerprint: {fingerprint}\n\n"
+                                       "Check it matches the other person's screen. Import?", parent=dlg):
+                return
+            dlg.destroy()
+            self._apply_qr_import(data)
+
+        buttons = tk.Frame(dlg)
+        buttons.pack(pady=10)
+        tk.Button(buttons, text="Import", width=10, command=do_import).pack(side=tk.LEFT, padx=5)
+        tk.Button(buttons, text="Cancel", width=10, command=dlg.destroy).pack(side=tk.LEFT, padx=5)
+        return dlg
+
+    def _apply_qr_import(self, data):
+        """Fill the connection form from a confirmed QR payload"""
+        def put(entry, value):
+            entry.delete(0, tk.END)
+            entry.insert(0, value)
+        put(self.channel_entry, data["room"])
+        put(self.key_entry, data["key"])
+        self.update_key_display()
+        if data["type"] == qr_exchange.TYPE_ROOM:
+            put(self.server_entry, data["host"])
+            put(self.port_entry, str(data["port"]))
+            put(self.mqtt_username_entry, data["mqtt_user"])
+            put(self.mqtt_password_entry, data["mqtt_pass"])
+            self.tls_var.set(data["tls"])
+            self.set_ca(data["ca"])
+            self.username_entry.delete(0, tk.END)  # the QR never carries a chat name
+            messagebox.showinfo("Imported", "Room imported.\n\nEnter your chat username, then Connect.")
+            return
+        # Key only: offer to update saved rooms that use this channel
+        matching = [name for name, cfg in self.saved_rooms.items() if cfg.get("channel") == data["room"]]
+        if matching and messagebox.askyesno("Update saved rooms?",
+                                            "Also update the key in these saved rooms?\n\n" + "\n".join(matching)):
+            for name in matching:
+                self.saved_rooms[name]["encryption_key"] = data["key"]
+            self.save_rooms_to_file()
+            messagebox.showinfo("Imported", f"Key imported and {len(matching)} saved room(s) updated.")
+        else:
+            messagebox.showinfo("Imported", f"Key imported for channel '{data['room']}'.")
+
     def toggle_tls(self):
         """Switch the default port when TLS is toggled; leave custom ports alone"""
         port = self.port_entry.get().strip()
