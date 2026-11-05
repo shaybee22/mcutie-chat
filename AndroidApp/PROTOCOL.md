@@ -157,6 +157,8 @@ openssl verify -x509_strict -CAfile ca.pem server.pem   # must print: server.pem
 
 In mosquitto: `listener 8883`, `cafile ca.pem`, `certfile server.pem`, `keyfile server.key`.
 
+The repository's `install.sh` (see `BROKER-SETUP.md`) does all of this. It issues the broker certificate for about 10 years instead of 825 days, so the CA key can be kept offline without forcing everyone to re-scan when the certificate expires.
+
 ## MQTT client ID
 
 Each client uses a random client ID, `mqttchat-` plus 16 hex characters, generated for every connection. It's never derived from the user name or the room config. MQTT brokers disconnect an existing session when a second one connects with the same ID, and everyone who scans the same room QR has the same config.

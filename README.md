@@ -83,6 +83,18 @@ This will compile `mqchat.py` into a portable `McutieChat.exe` inside the `porta
 
 ---
 
+## 🖧 Run Your Own Broker
+
+On a fresh Ubuntu server:
+
+```bash
+git clone https://github.com/shaybee22/mcutie-chat && cd mcutie-chat && sudo ./install.sh
+```
+
+It installs mosquitto with password logins, optional TLS (Let's Encrypt or a self-signed CA) and a firewall, tests it, and prints the settings to enter in the app. See [BROKER-SETUP.md](BROKER-SETUP.md).
+
+---
+
 ## 📱 Android Version
 
 An Android version of Mcutie Chat is available! It's written using Kivy and Buildozer for packaging. It has AES-256-GCM messages, in-person QR key/room exchange, and TLS to the broker (see [AndroidApp/README.md](AndroidApp/README.md)).
