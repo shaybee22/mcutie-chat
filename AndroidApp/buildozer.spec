@@ -30,7 +30,7 @@ presplash.filename = %(source.dir)s/icon/presplash.jpg
 android.presplash_color = #241647
 
 # (str) Application versioning (method 1)
-version = 0.3
+version = 1.0.0
 
 # (list) Application requirements
 # comma separated e.g. requirements = sqlite3,kivy
@@ -58,6 +58,9 @@ android.permissions = INTERNET, ACCESS_NETWORK_STATE, CAMERA
 
 # (list) The Android archs to build for, choices: armeabi-v7a, arm64-v8a, x86, x86_64
 android.archs = arm64-v8a
+
+# (str) Release build format: apk for direct download (buildozer's default is aab, for Play Store)
+android.release_artifact = apk
 
 # (bool) enables Android auto backup feature (Android API >=23)
 android.allow_backup = True

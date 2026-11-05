@@ -21,16 +21,27 @@ python3 chat_crypto.py
 ~/.venvs/mqttpeer/bin/python qr_exchange.py     # needs cryptography (CA validation)
 ~/.venvs/mqttpeer/bin/python tls_config.py      # needs cryptography + certifi
 
-# Build Android APK (config in buildozer.spec); output: bin/mcutiechat-0.3-arm64-v8a-debug.apk
+# Build Android APK (config in buildozer.spec); output: bin/mcutiechat-1.0.0-arm64-v8a-debug.apk
 source ~/.venvs/buildozer/bin/activate          # must be activated (VIRTUAL_ENV set), not just on PATH
 export PATH="$HOME/.cargo/bin:$PATH"            # rustup/cargo: p4a builds cryptography from source
 export PIP_NO_BINARY=charset-normalizer         # see the comment above `requirements` in buildozer.spec
 rm -rf .buildozer/android/platform/build-arm64-v8a/build/venv   # p4a corrupts this venv on every rebuild
 yes | buildozer android debug                   # `yes` accepts the SDK licences on first run
 
+# Release APK (same prep as above): bin/mcutiechat-1.0.0-arm64-v8a-release.apk. The signing key is
+# ~/.android-keys/mcutiechat-release.keystore (alias mcutiechat, PKCS12: one password), never in the repo.
+# All four P4A_RELEASE_* vars are needed, or buildozer quietly builds an unsigned APK.
+read -rsp 'Keystore password: ' P4A_RELEASE_KEYSTORE_PASSWD; echo
+export P4A_RELEASE_KEYSTORE_PASSWD P4A_RELEASE_KEYALIAS_PASSWD="$P4A_RELEASE_KEYSTORE_PASSWD"
+export P4A_RELEASE_KEYSTORE=~/.android-keys/mcutiechat-release.keystore P4A_RELEASE_KEYALIAS=mcutiechat
+yes | buildozer android release
+~/.buildozer/android/platform/android-sdk/build-tools/37.0.0/apksigner verify --print-certs bin/mcutiechat-1.0.0-arm64-v8a-release.apk
+
 # Install and launch on the phone. If WSL's `adb devices` is empty (phone attached to Windows,
 # not via usbipd), use Windows' adb.exe with a Windows path: adb.exe install -r "$(wslpath -w bin/...apk)"
-adb install -r bin/mcutiechat-0.3-arm64-v8a-debug.apk
+# Debug and release builds have different signatures: switching needs `adb uninstall org.seumas.mcutiechat`
+# first, which deletes the phone's saved rooms.
+adb install -r bin/mcutiechat-1.0.0-arm64-v8a-debug.apk
 adb shell monkey -p org.seumas.mcutiechat -c android.intent.category.LAUNCHER 1
 adb logcat -s python:* SDL:* AndroidRuntime:*
 
@@ -105,9 +116,11 @@ Saved rooms are JSON files in `rooms/` relative to the working directory (create
 - #1: Android app (protocol v1), rename, `install.sh`;
 - #2: app icon;
 - #3: the desktop client on protocol v1;
-- #4: saved rooms no longer packed into the APK.
+- #4: saved rooms no longer packed into the APK;
+- release prep: root `.gitignore` (desktop saved rooms, PyInstaller output, keystores), version `1.0.0`, release artifact `apk`.
 
 **Tested on hardware:**
+- The Windows `.exe` (`build_mqchat.bat`) against the user's real cloud broker: icons, connect, messages with the phone, Room QR scanned by the phone, Disconnect → Connect.
 - Android (Razr, arm64) ↔ desktop client (`../mqchat.py`) ↔ the Kivy app on desktop.
 - Plain and TLS: a pinned self-signed CA through a local proxy, plus public CAs via the test peer.
 - Room/Key QR in both directions (desktop shows → phone scans; desktop imports pasted QR text).
@@ -115,18 +128,16 @@ Saved rooms are JSON files in `rooms/` relative to the working directory (create
 - `install.sh` on a Proxmox Ubuntu 26.04 VM: self-signed and no TLS, re-runs, `--add-user`, CA key removal, SSH restriction, port change.
 
 **Not tested yet:**
-- the Windows `.exe` build (`build_mqchat.bat`);
+- the signed release APK;
 - `install.sh` with Let's Encrypt (`BROKER-SETUP.md` says untested);
 - TLS with a publicly trusted certificate on the phone itself.
 
 **Next steps, in order:**
-1. **Windows `.exe` build test.**
-   - Run `build_mqchat.bat` on Windows (it does `--paths AndroidApp`, `--icon`, `--add-data`).
-   - Launch `portable\McutieChat.exe`: check the window and taskbar icon, connect to a room, exchange messages with the phone, and show a Room QR that the phone can scan.
-2. **Tag `v1.0.0` and publish the GitHub Release.** Only after step 1 passes, and on the user's go-ahead. Decide at release time:
-   - `buildozer.spec` still says `version = 0.3`; bump it to `1.0.0` first.
-   - The APKs so far are **debug** builds signed with the debug key. A public APK needs a release build (`buildozer android release`) and a signing keystore the user keeps; that key can never change for future updates.
-   - Which artifacts to attach: the APK, `McutieChat.exe`, the Linux binary.
+1. **Signed release APK.** The user creates the keystore (`keytool`), builds with `buildozer android release` (commands above), checks it with `apksigner`, uninstalls the debug app, installs the release one and re-tests: connect, messages, Room QR scan, Disconnect → Connect. The keystore and its password must be backed up off this machine: losing it means no update can install over v1.0.0.
+2. **Tag `v1.0.0` and publish the GitHub Release.** Only after step 1 passes, and on the user's go-ahead.
+   - Artifacts: the release APK, `McutieChat.exe` (built on Windows), and optionally the Linux binary.
+   - README still says "No release yet" and has an unchecked "First release" box.
+   - Windows: `build_mqchat.bat` must run from a Windows folder; cmd can't `cd` into `\\wsl.localhost\...`.
 
 **Known issues:**
 - The APK bundles `chardet` 7.6.0 (Kivy → requests) as x86_64 `.so` files. Nothing imports it.

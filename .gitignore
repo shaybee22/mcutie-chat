@@ -1,0 +1,10 @@
+# Desktop client saved rooms: contain keys and MQTT passwords
+mqtt_chat_rooms.json
+# PyInstaller output (Windows script at the root, Linux script in Linux/)
+portable/
+build/
+dist/
+McutieChat.spec
+# Android signing keys: never commit
+*.keystore
+*.jks
