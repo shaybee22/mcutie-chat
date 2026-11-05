@@ -92,29 +92,41 @@ Own messages are rendered locally on send; incoming messages from the same usern
 
 Saved rooms are JSON files in `rooms/` relative to the working directory (created at import time of `connection_screen.py`). They store the encryption key and MQTT password in plaintext.
 
-## Current status (2026-11-04)
+## Current status (2026-11-05)
 
-The work is split into four phases (1: AES-256-GCM crypto, 2: TLS, 3: QR export, 4: QR camera import). Phases 3/4 were replaced by Step 2 (in-person QR exchange). Do one step at a time and stop after each so the user can test. Use plan mode before editing, keep changes surgical, and commit after each step. The desktop client (`../mqchat.py`, one file for Windows and Linux) now speaks protocol v1 too, sharing this folder's protocol modules.
+**Working style the user expects:**
+- plan mode before editing;
+- surgical changes;
+- one step at a time, stopping so they can test;
+- commit per step, on a branch, then PR + merge with **merge commits** (never squash: the Android history was subtree-merged into `AndroidApp/`);
+- no tags or releases without the user's go-ahead.
 
-**Step 1 (Phase 1, AES-256-GCM): done, tested on hardware.** Phone (Razr, arm64) ↔ desktop (this app under WSLg) messaging in room `chatty` on the test broker. Broker credentials and the test key live only in the gitignored `rooms/chatty.json` and the phone app's own `rooms/`, never in git.
+**Where we are:** everything is on `main` of `shaybee22/mcutie-chat`:
+- #1: Android app (protocol v1), rename, `install.sh`;
+- #2: app icon;
+- #3: the desktop client on protocol v1;
+- #4: saved rooms no longer packed into the APK.
 
-**Step 2 (QR key and room exchange): done, tested on hardware.**
-- Room QR scanned on the phone fills everything except the user's name.
-- Key QR scanned on the phone updates the key, and the fingerprints match on both screens.
-- FLAG_SECURE: screenshots of the app are black while a QR shows and normal after it closes.
-- The QR auto-closes after 60 s.
-- Two-way messaging works, including Disconnect → Connect on both sides with no reconnect loop.
-- Rejections (wrong type or version, `tls: true`, non-app QR codes) are verified on desktop.
+**Tested on hardware:**
+- Android (Razr, arm64) ↔ desktop client (`../mqchat.py`) ↔ the Kivy app on desktop.
+- Plain and TLS: a pinned self-signed CA through a local proxy, plus public CAs via the test peer.
+- Room/Key QR in both directions (desktop shows → phone scans; desktop imports pasted QR text).
+- FLAG_SECURE, and Disconnect → Connect with no reconnect loop.
+- `install.sh` on a Proxmox Ubuntu 26.04 VM: self-signed and no TLS, re-runs, `--add-user`, CA key removal, SSH restriction, port change.
 
-**Phase 2 (TLS): done, tested on hardware.** Rooms have `tls` and an optional pinned `ca`, and Room QRs carry both. Tested through a local TLS proxy to the test broker:
-- the phone scanned a TLS Room QR with an EC CA and joined; two-way messages over TLS with the desktop;
-- the RSA CA QR (version 27, which triggers the size warning) also scanned from a maximized desktop window;
-- wrong CA, no CA against a self-signed certificate, and hostname mismatch were refused (test peer and desktop UI);
-- the public-CA (certifi) path was verified against `broker.emqx.io:8883`.
+**Not tested yet:**
+- the Windows `.exe` build (`build_mqchat.bat`);
+- `install.sh` with Let's Encrypt (`BROKER-SETUP.md` says untested);
+- TLS with a publicly trusted certificate on the phone itself.
 
-**Not tested:** a real TLS listener on the user's broker (it has none yet), and TLS with a publicly trusted certificate on the phone itself.
-
-**Next:** nothing planned; wait for the user.
+**Next steps, in order:**
+1. **Windows `.exe` build test.**
+   - Run `build_mqchat.bat` on Windows (it does `--paths AndroidApp`, `--icon`, `--add-data`).
+   - Launch `portable\McutieChat.exe`: check the window and taskbar icon, connect to a room, exchange messages with the phone, and show a Room QR that the phone can scan.
+2. **Tag `v1.0.0` and publish the GitHub Release.** Only after step 1 passes, and on the user's go-ahead. Decide at release time:
+   - `buildozer.spec` still says `version = 0.3`; bump it to `1.0.0` first.
+   - The APKs so far are **debug** builds signed with the debug key. A public APK needs a release build (`buildozer android release`) and a signing keystore the user keeps; that key can never change for future updates.
+   - Which artifacts to attach: the APK, `McutieChat.exe`, the Linux binary.
 
 **Known issues:**
 - The APK bundles `chardet` 7.6.0 (Kivy → requests) as x86_64 `.so` files. Nothing imports it.
@@ -122,3 +134,4 @@ The work is split into four phases (1: AES-256-GCM crypto, 2: TLS, 3: QR export,
 - The desktop client's saved-rooms file is obfuscated with a key built into the code, not protected (README notes it; an OS keyring is on the roadmap).
 - ZXing's scan screen opens in landscape (the library's default).
 - A room name from a key QR fills the form unchanged; `save_room` doesn't sanitize names, so a crafted name like `../x` could write outside `rooms/` if the user then taps Save Room. Key-only import itself refuses such names.
+- "Clear Fields" in the desktop client resets the key to the placeholder passphrase `supersecretkey123`.
