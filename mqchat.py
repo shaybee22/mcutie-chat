@@ -3,6 +3,9 @@
 Mcutie Chat by James Powell
 A simple encrypted group chat using MQTT as the relay server
 FINAL VERSION - Anti-spam join detection
+
+Speaks Mcutie Chat protocol v1 (AndroidApp/PROTOCOL.md): AES-256-GCM messages, QR room/key
+exchange, optional TLS. The protocol code is shared with the Android app (AndroidApp/).
 """
 
 import tkinter as tk
@@ -15,8 +18,18 @@ import time
 import threading
 import os
 import sys
+import secrets
 from datetime import datetime
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet  # only for the saved-rooms file (legacy format)
+
+# Protocol code shared with the Android app: one copy, so the clients can't drift apart.
+# (A PyInstaller build bundles these modules via --paths AndroidApp.)
+_APP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "AndroidApp")
+if os.path.isdir(_APP_DIR):
+    sys.path.insert(0, _APP_DIR)
+import chat_crypto  # noqa: E402
+import qr_exchange  # noqa: E402
+import tls_config  # noqa: E402
 
 class SecureMQTTChat:
     def _set_window_icon(self):
@@ -40,7 +53,7 @@ class SecureMQTTChat:
         
         # MQTT and crypto variables
         self.mqtt_client = None
-        self.cipher = None
+        self.key = None  # 32-byte AES-256-GCM room key
         self.connected = False
         self.username = ""
         self.channel = ""
@@ -391,8 +404,9 @@ class SecureMQTTChat:
     def get_config_cipher(self):
         """Get or create cipher for config file encryption"""
         if not self.config_cipher:
-            # Use a fixed key for config encryption (in real app, use keyring/OS keystore)
-            config_key = self.derive_key("mqtt_chat_config_key_v1")
+            # Fixed key built into the code, kept so existing saved-rooms files still load.
+            # This is obfuscation, not protection (anyone with the source can derive it).
+            config_key = base64.urlsafe_b64encode(hashlib.sha256(b"mqtt_chat_config_key_v1").digest())
             self.config_cipher = Fernet(config_key)
         return self.config_cipher
         
@@ -727,10 +741,10 @@ class SecureMQTTChat:
             self.room_details.config(state=tk.DISABLED)
         
     def generate_key(self):
-        """Generate a new encryption key"""
-        key = Fernet.generate_key()
+        """Generate a new random 256-bit room key (base64url)"""
+        key = chat_crypto.generate_key()
         self.key_entry.delete(0, tk.END)
-        self.key_entry.insert(0, key.decode())
+        self.key_entry.insert(0, key)
         self.update_key_display()
         
     def copy_key(self):
@@ -766,13 +780,6 @@ class SecureMQTTChat:
         # Bind key entry changes to update display
         self.key_entry.bind('<KeyRelease>', lambda e: self.update_key_display())
         
-    def derive_key(self, password):
-        """Derive a Fernet key from a password"""
-        # Use SHA256 to create a 32-byte key, then base64 encode for Fernet
-        hash_obj = hashlib.sha256(password.encode())
-        key = base64.urlsafe_b64encode(hash_obj.digest())
-        return key
-        
     def connect_mqtt(self):
         """Connect to MQTT broker"""
         try:
@@ -791,17 +798,18 @@ class SecureMQTTChat:
                 messagebox.showerror("Error", "Please fill in all required fields")
                 return
                 
-            # Setup encryption
-            key = self.derive_key(encryption_key)
-            self.cipher = Fernet(key)
+            # Setup encryption: generated keys are used directly, passphrases go through scrypt
+            self.key = chat_crypto.key_from_input(encryption_key, self.channel)
             
             # Setup topics
             self.messages_topic = f"chat/{self.channel}/messages"
             self.presence_topic = f"chat/{self.channel}/presence"
             self.userlist_topic = f"chat/{self.channel}/users"
             
-            # Setup MQTT client (fix deprecation warning)
-            self.mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
+            # Setup MQTT client. Random client ID per connection (never derived from the name
+            # or room), so people sharing a room QR - or a stale client - never collide.
+            self.client_id = "mqttchat-" + secrets.token_hex(8)
+            self.mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, client_id=self.client_id)
             self.mqtt_client.on_connect = self.on_mqtt_connect
             self.mqtt_client.on_message = self.on_mqtt_message
             self.mqtt_client.on_disconnect = self.on_mqtt_disconnect
@@ -856,6 +864,7 @@ class SecureMQTTChat:
             
             # Add welcome message
             self.add_system_message("Connected to chat!")
+            self.add_system_message(f"Room key fingerprint: {chat_crypto.fingerprint(self.key)}")
             
         else:
             self.status_label.config(text=f"Connection failed (code {rc})", fg="red")
@@ -884,9 +893,8 @@ class SecureMQTTChat:
     def handle_chat_message(self, encrypted_payload):
         """Handle incoming chat message"""
         try:
-            # Decrypt message
-            encrypted_data = base64.b64decode(encrypted_payload.encode())
-            decrypted_data = self.cipher.decrypt(encrypted_data)
+            # Decrypt message (AES-256-GCM, bound to this room's topic)
+            decrypted_data = chat_crypto.decrypt(self.key, encrypted_payload, self.messages_topic)
             message_data = json.loads(decrypted_data.decode())
             
             username = message_data.get("user", "Unknown")
@@ -984,10 +992,9 @@ class SecureMQTTChat:
                 "timestamp": time.time()
             }
             
-            # Encrypt message
+            # Encrypt message (AES-256-GCM, bound to this room's topic)
             json_data = json.dumps(message_data)
-            encrypted_data = self.cipher.encrypt(json_data.encode())
-            encrypted_payload = base64.b64encode(encrypted_data).decode()
+            encrypted_payload = chat_crypto.encrypt(self.key, json_data.encode(), self.messages_topic)
             
             # Publish to MQTT
             self.mqtt_client.publish(self.messages_topic, encrypted_payload)
@@ -1031,9 +1038,10 @@ class SecureMQTTChat:
                     time.sleep(0.5)  # Give time for message to send
                     self.clear_my_presence()  # Clear our retained presence
                     
-                    # Stop the MQTT loop and disconnect
-                    self.mqtt_client.loop_stop()
+                    # Disconnect, then stop the loop (in this order the DISCONNECT packet is
+                    # actually sent, so the broker doesn't fire our Last Will)
                     self.mqtt_client.disconnect()
+                    self.mqtt_client.loop_stop()
                     
                 # Cancel heartbeat timer
                 if self.heartbeat_timer:
@@ -1046,9 +1054,10 @@ class SecureMQTTChat:
                 # Update GUI in main thread
                 self.root.after(0, self._finish_disconnect)
         
-        # Update status immediately
+        # Update status immediately. Don't clear self.connected here: the worker checks it to
+        # decide whether to disconnect (clearing it first left the old client running);
+        # _finish_disconnect and on_mqtt_disconnect reset it afterwards.
         self.status_label.config(text="Disconnecting...", fg="orange")
-        self.connected = False
         
         # Run disconnect in background thread to avoid GUI freeze
         disconnect_thread = threading.Thread(target=_disconnect_worker, daemon=True)
@@ -1099,8 +1108,8 @@ class SecureMQTTChat:
                     self.announce_presence("offline")
                     time.sleep(0.5)  # Give time for message to send
                     self.clear_my_presence()  # Clear our retained presence
-                    self.mqtt_client.loop_stop()
                     self.mqtt_client.disconnect()
+                    self.mqtt_client.loop_stop()
                 if self.heartbeat_timer:
                     self.heartbeat_timer.cancel()
             except:
@@ -1109,8 +1118,8 @@ class SecureMQTTChat:
                 # Destroy window in main thread
                 self.root.after(0, self.root.destroy)
         
-        # Set connected to False immediately
-        self.connected = False
+        # (self.connected stays as it is: the cleanup thread checks it to decide whether to
+        # announce offline and disconnect)
         
         # Run cleanup in background thread
         cleanup_thread = threading.Thread(target=_cleanup_and_exit, daemon=True)
@@ -1129,10 +1138,12 @@ if __name__ == "__main__":
     try:
         import paho.mqtt.client as mqtt
         from cryptography.fernet import Fernet
+        import qrcode, certifi  # noqa: F401
+        from PIL import Image, ImageTk  # noqa: F401
     except ImportError as e:
         print(f"Missing required package: {e}")
         print("\nPlease install required packages:")
-        print("pip install paho-mqtt cryptography")
+        print("pip install paho-mqtt cryptography qrcode pillow certifi")
         input("Press Enter to exit...")
         exit(1)
         
