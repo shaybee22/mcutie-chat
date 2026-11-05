@@ -98,7 +98,8 @@ class MQTTChatScreen(Screen):
             hint_text="Type your message here...", 
             multiline=False,
             size_hint_x=0.75,
-            font_size='16sp'
+            font_size='16sp',
+            text_validate_unfocus=False  # keep the cursor here after Enter, for the next message
         )
         self.message_input.bind(on_text_validate=self.send_message)
         
@@ -253,6 +254,8 @@ class MQTTChatScreen(Screen):
         if success:
             # Clear input
             self.message_input.text = ''
+            # Clicking Send moves focus to the button: put it back for the next message
+            Clock.schedule_once(lambda dt: setattr(self.message_input, 'focus', True))
         else:
             self.add_system_message("Failed to send message")
 

@@ -1,10 +1,9 @@
 import os
 import json
-import secrets
-import string
 import io
 from kivy.uix.screenmanager import Screen
 from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.widget import Widget
 from kivy.uix.label import Label
 from kivy.uix.textinput import TextInput
 from kivy.uix.button import Button
@@ -15,9 +14,16 @@ from kivy.uix.scrollview import ScrollView
 from kivy.uix.image import Image
 from kivy.clock import Clock
 from kivy.core.image import Image as CoreImage
+from kivy.utils import escape_markup
+import chat_crypto
+import qr_exchange
+import tls_config
+import android_qr
 # Note: kivy.clipboard not available on Android
 
 ROOMS_DIR = "rooms"
+QR_TIMEOUT = 60  # seconds a key/room QR stays on screen
+QR_MAX_VERSION = 25  # larger QR codes may not scan reliably off a phone screen
 os.makedirs(ROOMS_DIR, exist_ok=True)
 
 class ConnectionScreen(Screen):
@@ -39,7 +45,7 @@ class ConnectionScreen(Screen):
 
         # App title with more space
         title = Label(
-            text='MQTT Chat App', 
+            text='Mcutie Chat', 
             font_size='28sp',  # Larger font
             size_hint_y=None, 
             height='80dp',  # Taller
@@ -107,6 +113,24 @@ class ConnectionScreen(Screen):
             padding=[10, 15]
         )
         layout.add_widget(self.port_input)
+
+        # TLS toggle (switches the default port 1883 <-> 8883)
+        tls_layout = BoxLayout(
+            orientation='horizontal',
+            size_hint_y=None,
+            height='50dp',
+            spacing=15
+        )
+        tls_label = Label(
+            text='Use TLS:',
+            size_hint_x=0.7,
+            font_size='16sp'
+        )
+        self.tls_checkbox = CheckBox(size_hint_x=0.3, size_hint_y=None, height='40dp')
+        self.tls_checkbox.bind(active=self.toggle_tls)
+        tls_layout.add_widget(tls_label)
+        tls_layout.add_widget(self.tls_checkbox)
+        layout.add_widget(tls_layout)
 
         # Room name section
         room_label = Label(
@@ -206,6 +230,56 @@ class ConnectionScreen(Screen):
         )
         layout.add_widget(help_label)
 
+        # Broker CA certificate (TLS only): pinned if set, else publicly trusted CAs
+        ca_label = Label(
+            text='Broker CA certificate (optional, PEM):',
+            size_hint_y=None,
+            height='40dp',
+            font_size='16sp'
+        )
+        layout.add_widget(ca_label)
+        self.ca_input = TextInput(
+            hint_text='Leave empty for publicly trusted brokers (Let\'s Encrypt)',
+            size_hint_y=None,
+            height='100dp',
+            font_size='12sp',
+            multiline=True
+        )
+        self.ca_input.bind(text=self.update_ca_status)
+        layout.add_widget(self.ca_input)
+        self.ca_status_label = Label(
+            text='',
+            size_hint_y=None,
+            height='35dp',
+            font_size='13sp',
+            color=[0.6, 0.6, 0.6, 1]
+        )
+        self.ca_status_label.bind(size=lambda inst, size: setattr(inst, 'text_size', (size[0], None)))
+        layout.add_widget(self.ca_status_label)
+        if not android_qr.IS_ANDROID:
+            # Desktop: load the CA from a file (stored as PEM text like a pasted one)
+            ca_file_layout = BoxLayout(
+                orientation='horizontal',
+                size_hint_y=None,
+                height='50dp',
+                spacing=10
+            )
+            self.ca_path_input = TextInput(
+                hint_text='CA file path (.pem / .crt)',
+                size_hint_x=0.7,
+                font_size='14sp',
+                multiline=False
+            )
+            ca_load_button = Button(
+                text='Load CA',
+                size_hint_x=0.3,
+                font_size='15sp'
+            )
+            ca_load_button.bind(on_release=self.load_ca_file)
+            ca_file_layout.add_widget(self.ca_path_input)
+            ca_file_layout.add_widget(ca_load_button)
+            layout.add_widget(ca_file_layout)
+
         # Big spacer before encryption
         layout.add_widget(Label(size_hint_y=None, height='25dp'))
 
@@ -297,6 +371,34 @@ class ConnectionScreen(Screen):
         key_controls.add_widget(self.qr_key_button)
         layout.add_widget(key_controls)
 
+        # QR exchange: full-room QR for new users, and import by camera scan
+        qr_row = BoxLayout(
+            orientation='horizontal',
+            size_hint_y=None,
+            height='60dp',
+            spacing=10
+        )
+        self.room_qr_button = Button(
+            text='Room QR',
+            size_hint_x=0.5,
+            font_size='15sp',
+            size_hint_y=None,
+            height='55dp',
+            background_color=[0.3, 0.6, 0.9, 1]
+        )
+        self.room_qr_button.bind(on_release=self.show_room_qr)
+        self.scan_qr_button = Button(
+            text='Scan QR',
+            size_hint_x=0.5,
+            font_size='15sp',
+            size_hint_y=None,
+            height='55dp'
+        )
+        self.scan_qr_button.bind(on_release=self.scan_qr)
+        qr_row.add_widget(self.room_qr_button)
+        qr_row.add_widget(self.scan_qr_button)
+        layout.add_widget(qr_row)
+
         # Big spacer before saved rooms
         layout.add_widget(Label(size_hint_y=None, height='30dp'))
 
@@ -387,22 +489,59 @@ class ConnectionScreen(Screen):
         """Set reference to main app"""
         self.main_app = app
 
+    def toggle_tls(self, checkbox, value):
+        """Switch the default port when TLS is toggled; leave custom ports alone"""
+        port = self.port_input.text.strip()
+        if value and port in ('', '1883'):
+            self.port_input.text = '8883'
+        elif not value and port == '8883':
+            self.port_input.text = '1883'
+
+    def update_ca_status(self, instance, text):
+        """Describe the pasted CA, or say what's wrong with it"""
+        if not text.strip():
+            self.ca_status_label.text = ''
+            return
+        try:
+            self.ca_status_label.text = tls_config.describe_ca(tls_config.validate_ca_pem(text))
+        except Exception as e:
+            self.ca_status_label.text = f'Invalid CA: {e}'
+
+    def load_ca_file(self, instance):
+        """Desktop: read a CA certificate file into the PEM box"""
+        path = os.path.expanduser(self.ca_path_input.text.strip())
+        if not path:
+            self.show_popup("Enter the CA file path first!")
+            return
+        try:
+            with open(path, 'r') as f:
+                self.ca_input.text = tls_config.validate_ca_pem(f.read())
+        except Exception as e:
+            self.show_popup(f"Couldn't load CA certificate: {e}")
+
+    def _tls_settings(self):
+        """(tls, ca_pem) from the form, or None after showing an error popup"""
+        tls = self.tls_checkbox.active
+        ca = self.ca_input.text.strip()
+        if ca and not tls:
+            self.show_popup("Turn on TLS to use a CA certificate.")
+            return None
+        if ca:
+            try:
+                ca = tls_config.validate_ca_pem(ca)
+            except ValueError as e:
+                self.show_popup(f"Invalid CA certificate: {e}")
+                return None
+        return tls, ca
+
     def toggle_mqtt_password_visibility(self, checkbox, value):
         """Toggle MQTT password visibility"""
         self.mqtt_password_input.password = not value
 
     def generate_key(self, instance):
-        """Generate a new encryption key (like desktop version)"""
-        try:
-            from cryptography.fernet import Fernet
-            key = Fernet.generate_key()
-            self.key_input.text = key.decode()
-            self.show_popup("New encryption key generated!")
-        except ImportError:
-            # Fallback to simple random key if cryptography not available
-            key = ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(32))
-            self.key_input.text = key
-            self.show_popup("New encryption key generated! (Install 'cryptography' package for stronger keys)")
+        """Generate a new random 256-bit encryption key (base64url)"""
+        self.key_input.text = chat_crypto.generate_key()
+        self.show_popup("New encryption key generated!")
 
     def copy_key(self, instance):
         """Copy the encryption key to clipboard"""
@@ -424,11 +563,86 @@ class ConnectionScreen(Screen):
             self.show_popup(f"Could not copy to clipboard.\n\nEncryption Key:\n{self.key_input.text}\n\n(Long press to select and copy manually)")
 
     def show_key_qr(self, instance):
-        """Show QR code for the encryption key"""
-        if not self.key_input.text.strip():
+        """Show the key-only QR (room + key) for people already on the broker"""
+        room = self.room_input.text.strip()
+        key = self.key_input.text.strip()
+        if not key:
             self.show_popup("No encryption key to show QR code for!")
             return
-            
+        if not room:
+            self.show_popup("Room name is required!")
+            return
+        fingerprint = self._fingerprint(key, room)
+        if fingerprint:
+            self._show_qr_popup('Room Key QR Code',
+                                'Scan with Mcutie Chat (Scan QR)\nto import this room key',
+                                qr_exchange.build_key(room, key), fingerprint)
+
+    def show_room_qr(self, instance):
+        """Show the full-room QR (broker, login, room, key) so a new user can join with one scan"""
+        server = self.server_input.text.strip()
+        room = self.room_input.text.strip()
+        key = self.key_input.text.strip()
+        try:
+            port = int(self.port_input.text.strip() or "1883")
+            if port <= 0 or port > 65535:
+                raise ValueError("Invalid port range")
+        except ValueError:
+            self.show_popup("Port must be a valid number (1-65535)!")
+            return
+        if not server or not room or not key:
+            self.show_popup("Server, room and encryption key are required for a Room QR!")
+            return
+        fingerprint = self._fingerprint(key, room)
+        if not fingerprint:
+            return
+        tls_settings = self._tls_settings()
+        if tls_settings is None:
+            return
+        tls, ca = tls_settings
+        payload = qr_exchange.build_room(server, port, room, key,
+                                         self.mqtt_username_input.text.strip(),
+                                         self.mqtt_password_input.text.strip(),
+                                         tls=tls, ca=ca)
+        version = self._qr_version(payload)
+        if version is None:
+            self.show_popup("This room's settings are too large for a QR code.\n\n"
+                            "An EC P-256 CA certificate is much smaller than an RSA one.")
+            return
+        size_warning = ''
+        if version > QR_MAX_VERSION:
+            size_warning = (f"\n\n[b]This QR is large (version {version}) and may not scan "
+                            "reliably from a screen.[/b] An EC P-256 CA keeps it small.")
+        self._confirm(
+            'Show Room QR?',
+            "This QR contains the broker password and the room key.\n\n"
+            "Show it only to people you'd give both to." + size_warning,
+            'Show QR',
+            lambda: self._show_qr_popup('Room QR Code',
+                                        'Scan with Mcutie Chat (Scan QR)\nto join this room',
+                                        payload, fingerprint))
+
+    def _qr_version(self, payload):
+        """QR version the payload needs at our error-correction level, or None if it can't fit"""
+        import qrcode
+        from qrcode.exceptions import DataOverflowError
+        qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_L)
+        qr.add_data(payload)
+        try:
+            qr.make(fit=True)
+        except DataOverflowError:
+            return None
+        return qr.version
+
+    def _fingerprint(self, key, room):
+        """Fingerprint of the key as derived for this room, or None (with a popup) on error"""
+        if not chat_crypto.AVAILABLE:
+            self.show_popup("Cryptography package not available!")
+            return None
+        return chat_crypto.fingerprint(chat_crypto.key_from_input(key, room))
+
+    def _show_qr_popup(self, title, instructions_text, payload, fingerprint):
+        """Show a QR in memory only, with FLAG_SECURE, a fingerprint and a countdown"""
         try:
             # Import QR code libraries
             import qrcode
@@ -441,7 +655,7 @@ class ConnectionScreen(Screen):
                 box_size=10,
                 border=4,
             )
-            qr.add_data(self.key_input.text.strip())
+            qr.add_data(payload)
             qr.make(fit=True)
 
             # Create QR code image
@@ -452,45 +666,80 @@ class ConnectionScreen(Screen):
             qr_image.save(img_buffer, format='PNG')
             img_buffer.seek(0)
             
-            # Create Kivy image from bytes
-            kivy_image = CoreImage(img_buffer, ext='png')
+            # Create Kivy image from bytes (nocache: keep the key out of Kivy's image cache)
+            kivy_image = CoreImage(img_buffer, ext='png', nocache=True)
+            # Keep modules crisp when scaled (linear filtering blurs them into an unscannable mush)
+            kivy_image.texture.mag_filter = 'nearest'
+            kivy_image.texture.min_filter = 'nearest'
             
             # Create popup content
-            content_layout = BoxLayout(orientation='vertical', spacing=20, padding=20)
+            # Tight layout: the QR gets whatever height the fixed rows leave, so keep them small
+            content_layout = BoxLayout(orientation='vertical', spacing=6, padding=10)
             
             # Instructions
             instructions = Label(
-                text='Scan this QR code with any QR reader app\nto get the encryption key',
-                font_size='16sp',
+                text=instructions_text,
+                font_size='14sp',
                 halign='center',
                 valign='middle',
                 size_hint_y=None,
-                height='60dp',
+                height='40dp',
                 text_size=(None, None)
             )
             content_layout.add_widget(instructions)
             
-            # QR code image
+            # QR code image, drawn at a whole number of pixels per module and on whole-pixel
+            # coordinates: fractional scaling or half-pixel offsets make modules uneven
+            # (e.g. 2, 3 or 4 px wide), which scanners fail to read
+            n_modules = qr.modules_count + 2 * qr.border
+            qr_box = Widget()
             qr_widget = Image(
                 texture=kivy_image.texture,
-                size_hint=(1, 1)
+                size_hint=(None, None),
+                fit_mode='fill'
             )
-            content_layout.add_widget(qr_widget)
+            def fit_qr(box, *args):
+                px = max(1, int(min(box.size) // n_modules))
+                side = px * n_modules
+                qr_widget.size = (side, side)
+                qr_widget.pos = (int(box.x + (box.width - side) / 2),
+                                 int(box.y + (box.height - side) / 2))
+            qr_box.bind(pos=fit_qr, size=fit_qr)
+            qr_box.add_widget(qr_widget)
+            content_layout.add_widget(qr_box)
+
+            # Fingerprint for both people to read aloud, and the auto-close countdown
+            fingerprint_label = Label(
+                text=f'Fingerprint: [b]{fingerprint}[/b]',
+                markup=True,
+                font_size='20sp',
+                size_hint_y=None,
+                height='32dp'
+            )
+            content_layout.add_widget(fingerprint_label)
+            countdown_label = Label(
+                text=f'Closes in {QR_TIMEOUT} s',
+                font_size='14sp',
+                size_hint_y=None,
+                height='22dp',
+                color=[0.7, 0.7, 0.7, 1]
+            )
+            content_layout.add_widget(countdown_label)
             
             # Close button
             close_button = Button(
                 text='Close',
                 size_hint_y=None,
-                height='50dp',
+                height='44dp',
                 font_size='16sp'
             )
             content_layout.add_widget(close_button)
             
             # Create popup
             popup = Popup(
-                title='Encryption Key QR Code',
+                title=title,
                 content=content_layout,
-                size_hint=(0.9, 0.8),
+                size_hint=(0.96, 0.96),
                 auto_dismiss=True
             )
             
@@ -504,7 +753,25 @@ class ConnectionScreen(Screen):
                 except:
                     pass
             Clock.schedule_once(update_instructions_size, 0.1)
-            
+
+            # Auto-close after QR_TIMEOUT seconds
+            remaining = [QR_TIMEOUT]
+            def tick(dt):
+                remaining[0] -= 1
+                countdown_label.text = f'Closes in {remaining[0]} s'
+                if remaining[0] <= 0:
+                    popup.dismiss()
+                    return False
+            ticker = Clock.schedule_interval(tick, 1)
+
+            # However the popup closes: stop the timer, allow screenshots again, drop the QR texture
+            def on_dismiss(*args):
+                ticker.cancel()
+                android_qr.set_secure(False)
+                qr_widget.texture = None
+            popup.bind(on_dismiss=on_dismiss)
+
+            android_qr.set_secure(True)
             popup.open()
             
         except ImportError as e:
@@ -513,9 +780,127 @@ class ConnectionScreen(Screen):
             print(f"QR code generation error: {e}")
             self.show_popup(f"Error generating QR code: {e}")
 
+    def scan_qr(self, instance):
+        """Scan a room or key QR with the camera (Android only)"""
+        if not android_qr.scan(self._on_qr_scanned, self.show_popup):
+            self.show_popup("Scanning is only available on Android.")
+
+    def _on_qr_scanned(self, text):
+        """Validate a scanned payload and ask the user to confirm the import"""
+        if text is None:
+            return  # scan cancelled
+        try:
+            data = qr_exchange.parse(text)
+        except ValueError as e:
+            self.show_popup(str(e))
+            return
+        fingerprint = self._fingerprint(data["key"], data["room"])
+        if not fingerprint:
+            return
+        # Scanned text is untrusted: escape it for the markup label
+        room = escape_markup(data['room'])
+        if data["type"] == qr_exchange.TYPE_ROOM:
+            if not data["tls"]:
+                tls_text = "off"
+            elif data["ca"]:
+                tls_text = f"on, CA: {escape_markup(tls_config.describe_ca(data['ca']))}"
+            else:
+                tls_text = "on, publicly trusted CAs"
+            details = (f"Room: {room}\nServer: {escape_markup(data['host'])}:{data['port']}\n"
+                       f"MQTT user: {escape_markup(data['mqtt_user']) or '(anonymous)'}\n"
+                       f"TLS: {tls_text}")
+        else:
+            details = f"Room key for: {room}"
+        self._confirm(
+            'Import from QR?',
+            f"{details}\n\nFingerprint: [b]{fingerprint}[/b]\n\n"
+            "Check it matches the other person's screen.",
+            'Import',
+            lambda: self._import_qr(data))
+
+    def _import_qr(self, data):
+        """Fill the form from a confirmed QR payload"""
+        room = data["room"]
+        self.room_input.text = room
+        self.key_input.text = data["key"]
+        if data["type"] == qr_exchange.TYPE_ROOM:
+            self.server_input.text = data["host"]
+            self.port_input.text = str(data["port"])
+            self.mqtt_username_input.text = data["mqtt_user"]
+            self.mqtt_password_input.text = data["mqtt_pass"]
+            self.tls_checkbox.active = data["tls"]
+            self.port_input.text = str(data["port"])  # toggle_tls may have changed it
+            self.ca_input.text = data["ca"]
+            # The QR never carries a chat name: the receiver picks their own
+            self.username_input.text = ''
+            self.show_popup("Room imported.\n\nEnter your name, then tap Connect.")
+            return
+        # Key-only: also update the saved room of that name, if there is one
+        file_path = os.path.join(ROOMS_DIR, f"{room}.json")
+        if os.path.basename(room) == room and os.path.exists(file_path):
+            try:
+                with open(file_path, 'r') as f:
+                    saved = json.load(f)
+                saved["key"] = data["key"]
+                with open(file_path, 'w') as f:
+                    json.dump(saved, f, indent=2)
+                self.show_popup(f"Key imported and saved room '{room}' updated.")
+            except Exception as e:
+                self.show_popup(f"Key imported, but saving room '{room}' failed: {e}")
+        else:
+            self.show_popup(f"Key imported for room '{room}'.")
+
+    def _confirm(self, title, message, ok_text, on_ok):
+        """Two-button confirmation popup; calls on_ok() if confirmed"""
+        content_layout = BoxLayout(orientation='vertical', spacing=20, padding=20)
+        message_label = Label(
+            text=message,
+            markup=True,
+            font_size='16sp',
+            halign='center',
+            valign='middle',
+            text_size=(None, None)
+        )
+        content_layout.add_widget(message_label)
+        button_layout = BoxLayout(
+            orientation='horizontal',
+            size_hint_y=None,
+            height='60dp',
+            spacing=15
+        )
+        cancel_button = Button(
+            text='Cancel',
+            size_hint_x=0.5,
+            font_size='16sp',
+            background_color=[0.5, 0.5, 0.5, 1]
+        )
+        ok_button = Button(
+            text=ok_text,
+            size_hint_x=0.5,
+            font_size='16sp'
+        )
+        button_layout.add_widget(cancel_button)
+        button_layout.add_widget(ok_button)
+        content_layout.add_widget(button_layout)
+        popup = Popup(
+            title=title,
+            content=content_layout,
+            size_hint=(0.9, 0.6),
+            auto_dismiss=False
+        )
+        cancel_button.bind(on_release=popup.dismiss)
+        def confirmed(instance):
+            popup.dismiss()
+            on_ok()
+        ok_button.bind(on_release=confirmed)
+        def update_label_size(dt):
+            message_label.text_size = (popup.width - 40, None)
+        Clock.schedule_once(update_label_size, 0.1)
+        popup.open()
+
     def copy_room_config(self, instance):
         """Copy room configuration as shareable text"""
-        config_text = f"""MQTT Chat Room Config:
+        config_text = f"""Mcutie Chat Room Config:
 Server: {self.server_input.text}
 Port: {self.port_input.text}
 Room: {self.room_input.text}
@@ -562,6 +947,9 @@ Key: {self.key_input.text if self.key_input.text else 'None'}"""
                 self.key_input.text = data.get("key", "")
                 self.mqtt_username_input.text = data.get("mqtt_username", "")
                 self.mqtt_password_input.text = data.get("mqtt_password", "")
+                self.tls_checkbox.active = bool(data.get("tls", False))
+                self.port_input.text = str(data.get("port", "1883"))  # toggle_tls may have changed it
+                self.ca_input.text = data.get("ca", "")
         except Exception as e:
             self.show_popup(f"Error loading room: {e}")
 
@@ -580,7 +968,9 @@ Key: {self.key_input.text if self.key_input.text else 'None'}"""
                 "room": name,
                 "key": self.key_input.text.strip(),
                 "mqtt_username": self.mqtt_username_input.text.strip(),
-                "mqtt_password": self.mqtt_password_input.text.strip()
+                "mqtt_password": self.mqtt_password_input.text.strip(),
+                "tls": self.tls_checkbox.active,
+                "ca": self.ca_input.text.strip()
             }
             
             file_path = os.path.join(ROOMS_DIR, f"{name}.json")
@@ -753,7 +1143,12 @@ Key: {self.key_input.text if self.key_input.text else 'None'}"""
             self.main_app.username = username
             mqtt_user = self.mqtt_username_input.text.strip()
             mqtt_pass = self.mqtt_password_input.text.strip()
-            self.main_app.connect_to_mqtt(server, port_int, room, key, mqtt_user, mqtt_pass)
+            tls_settings = self._tls_settings()
+            if tls_settings is None:
+                return
+            tls, ca = tls_settings
+            self.main_app.connect_to_mqtt(server, port_int, room, key, mqtt_user, mqtt_pass,
+                                          tls=tls, ca_pem=ca)
         else:
             self.show_popup("App not properly initialized!")
 

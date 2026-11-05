@@ -1,6 +1,10 @@
-# 📱 MQTTChat – Android Version (Buildozer)
+# 📱 Mcutie Chat – Android Version (Buildozer)
 
-Welcome to the **Android Kivy version** of [MQTTChat](https://github.com/shaybee22/MQTTChat/), a fully encrypted MQTT-based group chat app! This version is optimized for mobile devices using **Kivy** and **Buildozer**, and supports encrypted messaging and presence updates just like the desktop counterpart.
+Welcome to the **Android Kivy version** of [Mcutie Chat](https://github.com/shaybee22/mcutie-chat/), a fully encrypted MQTT-based group chat app, optimized for mobile devices using **Kivy** and **Buildozer**.
+
+> ⚠️ **Compatibility: the desktop and Android clients can't talk to each other right now.**
+> The desktop client (`mqchat.py`, `Linux/mqchat.py`) still uses the old **Fernet** message format. The Android app now uses **AES-256-GCM** with a new key format ([AndroidApp/PROTOCOL.md](PROTOCOL.md)), so the two **cannot read each other's messages until the desktop client is ported**.
+> Porting the desktop client (AES-256-GCM, plus Room/Key QR import by paste or file) is the next step. **There is no release yet:** one comes once both clients interoperate.
 
 ---
 
@@ -9,10 +13,11 @@ Welcome to the **Android Kivy version** of [MQTTChat](https://github.com/shaybee
 * 🛡️ End-to-end encrypted group messaging
 * 🌐 MQTT broker integration
 * 👥 Online user presence detection
-* 🔐 Password-derived encryption key (Fernet/AES)
+* 🔐 AES-256-GCM messages: generated 256-bit keys, or passphrases stretched with scrypt
 * 📱 Kivy GUI for mobile touch screens
 * 💬 Smooth chat interface with real-time updates
-* 🔐 QR code button for sharing encryption key in person
+* 📷 In-person QR exchange: **Key QR** (room key) and **Room QR** (full room setup, so a new user joins with one scan), with a read-aloud fingerprint; screenshots blocked while a QR is shown
+* 🔒 TLS to the broker, with a pinned CA certificate (self-signed brokers) or public CAs (e.g. Let's Encrypt)
 
 ---
 
@@ -38,8 +43,8 @@ pip install cython kivy paho-mqtt cryptography
 1. **Clone the repo** (if you haven’t already):
 
 ```bash
-git clone https://github.com/shaybee22/MQTTChat.git
-cd MQTTChat/AndroidApp
+git clone https://github.com/shaybee22/mcutie-chat.git
+cd mcutie-chat/AndroidApp
 ```
 
 2. **Install Buildozer**:
@@ -55,6 +60,8 @@ buildozer init
 ```
 
 > ✅ This project already includes a pre-configured `buildozer.spec` file!
+
+> ℹ️ The exact, tested build steps and build-environment quirks (Python 3.14 host, python-for-android workarounds) are in [CLAUDE.md](CLAUDE.md).
 
 4. **Build the APK**:
 
@@ -80,15 +87,23 @@ AndroidApp/
 ├── chat_screen.py          # Chat screen interface
 ├── connection_screen.py    # Connection & login screen
 ├── buildozer.spec          # Android build configuration
+├── chat_crypto.py          # AES-256-GCM, key derivation, fingerprint
+├── qr_exchange.py          # Room/Key QR payloads
+├── android_qr.py           # QR scanner (ZXing) + screenshot blocking
+├── tls_config.py           # TLS trust rules
+├── p4a-recipes/            # python-for-android recipe fix (cryptography)
+├── tools/test_peer.py      # Headless test client
+└── PROTOCOL.md             # Wire format spec (messages, QR codes, TLS)
 ```
 
 ---
 
 ## 🔐 Encryption Details
 
-* Encryption uses **Fernet** (AES-128-CBC + HMAC)
-* Messages are encrypted client-side before sending
-* A shared password-derived key is used for room-wide secure chat
+* Messages use **AES-256-GCM** with a random nonce per message, bound to the room's topic
+* Room keys are either generated (random 256-bit) or derived from a passphrase with **scrypt** (room-specific salt)
+* Messages are encrypted client-side before sending; the broker only sees ciphertext
+* Full specification: [PROTOCOL.md](PROTOCOL.md)
 
 ---
 
@@ -109,7 +124,7 @@ Ensure that the MQTT broker you're connecting to:
 
 ## 📄 License
 
-See [LICENSE](https://github.com/shaybee22/MQTTChat/blob/main/LICENSE) for usage restrictions. TL;DR: **Personal use only**, give full credit if modified, and **don’t sell it** without permission.
+See [LICENSE](https://github.com/shaybee22/mcutie-chat/blob/main/LICENSE) for usage restrictions. TL;DR: **Personal use only**, give full credit if modified, and **don’t sell it** without permission.
 
 ---
 **Future Features!**

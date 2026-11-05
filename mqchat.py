@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MQChat by James Powell
+Mcutie Chat by James Powell
 A simple encrypted group chat using MQTT as the relay server
 FINAL VERSION - Anti-spam join detection
 """
@@ -20,7 +20,7 @@ from cryptography.fernet import Fernet
 class SecureMQTTChat:
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("MQChat by James Powell")
+        self.root.title("Mcutie Chat by James Powell")
         self.root.geometry("900x800")
         
         # MQTT and crypto variables
@@ -117,7 +117,7 @@ class SecureMQTTChat:
     def setup_connection_tab(self):
         """Setup the connection configuration tab"""
         # Title
-        title_label = tk.Label(self.connection_frame, text="MQTT Chat Configuration", 
+        title_label = tk.Label(self.connection_frame, text="Mcutie Chat Configuration", 
                               font=("Arial", 16, "bold"))
         title_label.pack(pady=20)
         
