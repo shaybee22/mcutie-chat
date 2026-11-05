@@ -115,6 +115,9 @@ class SecureMQTTChat:
         self.key_entry.delete(0, tk.END)
         self.key_entry.insert(0, "supersecretkey123")
         
+        self.tls_var.set(False)
+        self.set_ca("")
+        
         # Clear dropdown selection
         self.rooms_var.set("")
         
@@ -147,7 +150,7 @@ class SecureMQTTChat:
         # Title
         title_label = tk.Label(self.connection_frame, text="Mcutie Chat Configuration", 
                               font=("Arial", 16, "bold"))
-        title_label.pack(pady=20)
+        title_label.pack(pady=12)
         
         # Quick Load Frame
         quick_frame = tk.LabelFrame(self.connection_frame, text="Quick Connect", 
@@ -258,9 +261,25 @@ class SecureMQTTChat:
         self.key_display.grid(row=7, column=1, padx=5, pady=5)
         self.update_key_display()
         
+        # TLS (optional): pinned to the CA below if given, else publicly trusted CAs; never unverified
+        tls_frame = tk.LabelFrame(config_frame, text="TLS (Optional)", font=("Arial", 9, "italic"))
+        tls_frame.pack(padx=10, pady=(0, 10), fill=tk.X)
+        # Compact on purpose: the connection tab has to fit the 900x800 window
+        self.tls_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(tls_frame, text="Use TLS", variable=self.tls_var,
+                       command=self.toggle_tls).grid(row=0, column=0, sticky="w", padx=5)
+        self.ca_status = tk.Label(tls_frame, text="", font=("Arial", 8), fg="gray", anchor="w")
+        self.ca_status.grid(row=0, column=1, sticky="ew", padx=5)
+        tk.Button(tls_frame, text="Load CA file...", command=self.load_ca_file).grid(row=0, column=2, sticky="e", padx=5, pady=2)
+        tls_frame.grid_columnconfigure(1, weight=1)
+        self.ca_text = tk.Text(tls_frame, height=2, width=90, font=("Courier", 8))
+        self.ca_text.grid(row=1, column=0, columnspan=3, padx=5, pady=(0, 4))
+        self.ca_text.bind("<KeyRelease>", lambda e: self.update_ca_status())
+        self.update_ca_status()
+
         # Buttons frame
         buttons_frame = tk.Frame(self.connection_frame)
-        buttons_frame.pack(pady=20)
+        buttons_frame.pack(pady=12)
         
         # Save current room button
         save_room_btn = tk.Button(buttons_frame, text="💾 Save Current Room", 
@@ -441,6 +460,8 @@ class SecureMQTTChat:
             "encryption_key": key,
             "mqtt_username": self.mqtt_username_entry.get().strip(),
             "mqtt_password": self.mqtt_password_entry.get().strip(),
+            "tls": self.tls_var.get(),
+            "ca": self.get_ca(),
             "saved_date": datetime.now().isoformat()
         }
         
@@ -478,6 +499,10 @@ class SecureMQTTChat:
         
         self.mqtt_password_entry.delete(0, tk.END)
         self.mqtt_password_entry.insert(0, config.get("mqtt_password", ""))
+        
+        # TLS (rooms saved before TLS support have neither field)
+        self.tls_var.set(bool(config.get("tls", False)))
+        self.set_ca(config.get("ca", ""))
         
         self.update_key_display()
         messagebox.showinfo("Loaded", f"Room '{selected_room}' configuration loaded!")
@@ -528,7 +553,16 @@ class SecureMQTTChat:
         else:
             details += f"MQTT Auth: Anonymous\n"
             
-        details += f"Encryption Key: {'*' * len(config['encryption_key'])}\n\n"
+        details += f"Encryption Key: {'*' * len(config['encryption_key'])}\n"
+        if config.get("tls"):
+            ca = config.get("ca", "")
+            try:
+                ca_text = tls_config.describe_ca(ca) if ca else "public CAs"
+            except Exception:
+                ca_text = "invalid CA certificate"
+            details += f"TLS: on ({ca_text})\n\n"
+        else:
+            details += "TLS: off\n\n"
         details += f"Saved: {config.get('saved_date', 'Unknown')}\n"
         
         self.room_details.config(state=tk.NORMAL)
@@ -549,7 +583,7 @@ class SecureMQTTChat:
         # Create edit dialog
         edit_window = tk.Toplevel(self.root)
         edit_window.title(f"Edit Room: {room_name}")
-        edit_window.geometry("400x300")
+        edit_window.geometry("560x430")
         edit_window.transient(self.root)
         edit_window.grab_set()
         
@@ -589,6 +623,13 @@ class SecureMQTTChat:
         key_entry.grid(row=6, column=1, padx=5, pady=5)
         key_entry.insert(0, config["encryption_key"])
         
+        tls_var = tk.BooleanVar(value=bool(config.get("tls", False)))
+        tk.Checkbutton(edit_window, text="Use TLS", variable=tls_var).grid(row=7, column=1, sticky="w", padx=5, pady=5)
+        tk.Label(edit_window, text="CA (PEM):").grid(row=8, column=0, sticky="ne", padx=5, pady=5)
+        ca_box = tk.Text(edit_window, height=4, width=48, font=("Courier", 8))
+        ca_box.grid(row=8, column=1, padx=5, pady=5)
+        ca_box.insert("1.0", config.get("ca", ""))
+        
         def save_changes():
             new_config = {
                 "server": server_entry.get().strip(),
@@ -598,8 +639,14 @@ class SecureMQTTChat:
                 "encryption_key": key_entry.get().strip(),
                 "mqtt_username": mqtt_user_entry.get().strip(),
                 "mqtt_password": mqtt_pass_entry.get().strip(),
+                "tls": tls_var.get(),
+                "ca": ca_box.get("1.0", tk.END).strip(),
                 "saved_date": config.get("saved_date", datetime.now().isoformat())
             }
+            tls_settings = self._tls_settings(new_config["tls"], new_config["ca"])
+            if tls_settings is None:
+                return
+            new_config["ca"] = tls_settings[1]
             
             if not all([new_config["server"], new_config["port"], new_config["channel"], 
                        new_config["username"], new_config["encryption_key"]]):
@@ -614,7 +661,7 @@ class SecureMQTTChat:
         
         # Buttons
         button_frame = tk.Frame(edit_window)
-        button_frame.grid(row=7, column=0, columnspan=2, pady=20)
+        button_frame.grid(row=9, column=0, columnspan=2, pady=20)
         
         tk.Button(button_frame, text="Save Changes", command=save_changes,
                  bg="#4CAF50", fg="white").pack(side=tk.LEFT, padx=5)
@@ -755,6 +802,60 @@ class SecureMQTTChat:
         self.root.update()  # Required on some systems
         messagebox.showinfo("Copied", "Encryption key copied to clipboard!")
         
+    def toggle_tls(self):
+        """Switch the default port when TLS is toggled; leave custom ports alone"""
+        port = self.port_entry.get().strip()
+        if self.tls_var.get() and port in ("", "1883"):
+            self.port_entry.delete(0, tk.END); self.port_entry.insert(0, "8883")
+        elif not self.tls_var.get() and port == "8883":
+            self.port_entry.delete(0, tk.END); self.port_entry.insert(0, "1883")
+
+    def get_ca(self):
+        return self.ca_text.get("1.0", tk.END).strip()
+
+    def set_ca(self, pem):
+        self.ca_text.delete("1.0", tk.END)
+        if pem:
+            self.ca_text.insert("1.0", pem)
+        self.update_ca_status()
+
+    def update_ca_status(self):
+        """Describe the CA in the box, or say what's wrong with it"""
+        pem = self.get_ca()
+        if not pem:
+            self.ca_status.config(text="Broker CA (PEM) below - leave empty for publicly trusted brokers", fg="gray")
+            return
+        try:
+            self.ca_status.config(text=tls_config.describe_ca(tls_config.validate_ca_pem(pem)), fg="dark green")
+        except Exception as e:
+            self.ca_status.config(text=f"Invalid CA: {e}", fg="red")
+
+    def load_ca_file(self):
+        """Read a CA certificate file into the CA box"""
+        from tkinter import filedialog
+        path = filedialog.askopenfilename(title="Broker CA certificate",
+                                          filetypes=[("Certificates", "*.pem *.crt *.cer"), ("All files", "*.*")])
+        if not path:
+            return
+        try:
+            with open(path) as f:
+                self.set_ca(tls_config.validate_ca_pem(f.read()))
+        except Exception as e:
+            messagebox.showerror("CA certificate", f"Couldn't load the CA certificate:\n{e}")
+
+    def _tls_settings(self, tls, ca):
+        """(tls, normalized ca) or None after showing an error"""
+        if ca and not tls:
+            messagebox.showerror("TLS", "Turn on TLS to use a CA certificate.")
+            return None
+        if ca:
+            try:
+                ca = tls_config.validate_ca_pem(ca)
+            except ValueError as e:
+                messagebox.showerror("TLS", f"Invalid CA certificate:\n{e}")
+                return None
+        return tls, ca
+
     def toggle_mqtt_password_visibility(self):
         """Toggle showing/hiding the MQTT password"""
         if self.show_mqtt_password_var.get():
@@ -797,6 +898,10 @@ class SecureMQTTChat:
             if not all([server, self.channel, self.username, encryption_key]):
                 messagebox.showerror("Error", "Please fill in all required fields")
                 return
+            tls_settings = self._tls_settings(self.tls_var.get(), self.get_ca())
+            if tls_settings is None:
+                return
+            use_tls, ca_pem = tls_settings
                 
             # Setup encryption: generated keys are used directly, passphrases go through scrypt
             self.key = chat_crypto.key_from_input(encryption_key, self.channel)
@@ -821,6 +926,11 @@ class SecureMQTTChat:
             else:
                 self.add_system_message("Connecting with anonymous MQTT access")
             
+            # TLS: pinned to the room's CA if it has one, else the certifi list; never unverified
+            if use_tls:
+                self.mqtt_client.tls_set_context(tls_config.make_ssl_context(ca_pem or None))
+                self.add_system_message("Using TLS" + (" (pinned CA)" if ca_pem else " (public CAs)"))
+
             # Set last will (sent when we disconnect unexpectedly)
             will_msg = json.dumps({"user": self.username, "status": "offline", "timestamp": time.time()})
             self.mqtt_client.will_set(f"{self.presence_topic}/{self.username}", will_msg, retain=True)
