@@ -101,7 +101,12 @@ def main():
         client.username_pw_set(args.mqtt_user, args.mqtt_password or "")
     client.will_set(my_presence, presence("offline"), retain=True)
     if args.tls:
-        ca_pem = open(args.ca).read() if args.ca else None
+        ca_pem = None
+        if args.ca:
+            try:
+                ca_pem = tls_config.validate_ca_pem(open(args.ca).read())
+            except (OSError, ValueError) as e:
+                ap.error(f"--ca {args.ca}: {e}")  # never fall back to public CAs on a bad file
         client.tls_set_context(tls_config.make_ssl_context(ca_pem))
     elif args.ca:
         ap.error("--ca requires --tls")
@@ -125,8 +130,9 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        client.publish(my_presence, presence("offline"), retain=True).wait_for_publish(2)
-        client.publish(my_presence, "", retain=True).wait_for_publish(2)
+        if joined.is_set():  # only announce leaving if we ever joined
+            client.publish(my_presence, presence("offline"), retain=True).wait_for_publish(2)
+            client.publish(my_presence, "", retain=True).wait_for_publish(2)
         client.loop_stop()
         client.disconnect()
         log("left room")
