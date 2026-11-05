@@ -23,10 +23,11 @@ Mcutie Chat (formerly MQChat) is a cross-platform, end-to-end encrypted group ch
 
 ## 📦 Requirements (to build)
 
-* Python 3
+* Python 3 with Tk (`sudo apt install python3-tk` on Debian/Ubuntu)
 * pip
-* PyInstaller
-* GTK (pre-installed on most Linux distros)
+* The packages `paho-mqtt cryptography qrcode pillow certifi` (the build script installs them, plus PyInstaller)
+
+The desktop client is a single file, `mqchat.py` at the repo root, shared by Windows and Linux. Its protocol code (encryption, QR codes, TLS) comes from `AndroidApp/`, the same code the Android app uses.
 
 ---
 
@@ -34,27 +35,27 @@ Mcutie Chat (formerly MQChat) is a cross-platform, end-to-end encrypted group ch
 
 ### 🔧 One-Click Build:
 
-Use the included `build_mqchat.sh` script:
+Use the included `build_mqchat.sh` script (best inside a virtualenv, since it installs packages with `pip3`):
 
 ```bash
-chmod +x build_mqchat.sh
-./build_mqchat.sh
+./Linux/build_mqchat.sh
 ```
 
 This will:
 
-* Install PyInstaller
+* Install PyInstaller and the app's packages
 * Clean previous builds
-* Compile `mqchat.py` into a standalone executable
-* Output it in a `portable/` directory
+* Compile `../mqchat.py` (with the shared modules from `../AndroidApp`) into a standalone executable
+* Output it in `Linux/portable/`
 
 Once complete, you’ll have a single binary file named `McutieChat` that can be copied to other Linux systems.
 
 ### Manual Build:
 
 ```bash
-pip3 install pyinstaller
-pyinstaller --onefile --windowed --name="McutieChat" --distpath="./portable" mqchat.py
+cd Linux
+pip3 install pyinstaller paho-mqtt cryptography qrcode pillow certifi
+pyinstaller --onefile --windowed --name="McutieChat" --paths ../AndroidApp --add-data "../mcutie-icon.png:." --distpath="./portable" ../mqchat.py
 ```
 
 ---
@@ -64,12 +65,13 @@ pyinstaller --onefile --windowed --name="McutieChat" --distpath="./portable" mqc
 Once built, run it like so:
 
 ```bash
-./portable/McutieChat
+./Linux/portable/McutieChat
 ```
 
-You can also run it directly from Python (if you don't need portability):
+You can also run it directly from Python, from the repo root (if you don't need portability):
 
 ```bash
+pip3 install paho-mqtt cryptography qrcode pillow certifi
 python3 mqchat.py
 ```
 
@@ -78,10 +80,12 @@ python3 mqchat.py
 ## 📁 File Overview
 
 ```
-📁 Linux/
-├── mqchat.py                  # Main app
-├── build_mqchat.sh    # Bash script to build Linux executable
-├── portable/                  # Output folder for standalone binary (created at build)
+📁 mcutie-chat/
+├── mqchat.py                  # The desktop client (Windows and Linux)
+├── AndroidApp/                # Android app + the shared protocol modules
+└── Linux/
+    ├── build_mqchat.sh        # Builds the Linux executable from ../mqchat.py
+    └── portable/              # Output folder for the standalone binary (created at build)
 ```
 
 ---

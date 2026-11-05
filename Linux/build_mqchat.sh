@@ -1,4 +1,6 @@
 #!/bin/bash
+# Builds the shared desktop client (../mqchat.py) into a single Linux executable.
+cd "$(dirname "$0")" || exit 1
 
 echo "========================================"
 echo "   Mcutie Chat Portable Executable Builder"
@@ -6,8 +8,8 @@ echo "   By James Powell"
 echo "========================================"
 echo
 
-echo "[1/4] Installing PyInstaller..."
-pip3 install pyinstaller
+echo "[1/4] Installing PyInstaller and the app's packages..."
+pip3 install pyinstaller paho-mqtt cryptography qrcode pillow certifi
 if [ $? -ne 0 ]; then
     echo "ERROR: Failed to install PyInstaller"
     exit 1
@@ -20,7 +22,8 @@ rm -rf dist build mqchat.spec
 echo
 echo "[3/4] Building portable executable..."
 echo "This may take a few minutes..."
-pyinstaller --onefile --windowed --name="McutieChat" --add-data "mcutie-icon.png:." --distpath="./portable" mqchat.py
+# --paths: the protocol modules (chat_crypto, qr_exchange, tls_config) are shared with the Android app
+pyinstaller --onefile --windowed --name="McutieChat" --paths ../AndroidApp --add-data "../mcutie-icon.png:." --distpath="./portable" ../mqchat.py
 
 if [ $? -ne 0 ]; then
     echo "ERROR: Build failed!"
