@@ -112,14 +112,16 @@ Saved rooms are JSON files in `rooms/` relative to the working directory (create
 - commit per step, on a branch, then PR + merge with **merge commits** (never squash: the Android history was subtree-merged into `AndroidApp/`);
 - no tags or releases without the user's go-ahead.
 
-**Where we are:** everything is on `main` of `shaybee22/mcutie-chat`:
+**Where we are:** **v1.0.0 is released** (tag on `672d2ad`, https://github.com/shaybee22/mcutie-chat/releases/tag/v1.0.0) with the signed release APK, `McutieChat-1.0.0-windows-x64.exe` and `SHA256SUMS.txt`. Everything is on `main` of `shaybee22/mcutie-chat`:
 - #1: Android app (protocol v1), rename, `install.sh`;
 - #2: app icon;
 - #3: the desktop client on protocol v1;
 - #4: saved rooms no longer packed into the APK;
-- release prep: root `.gitignore` (desktop saved rooms, PyInstaller output, keystores), version `1.0.0`, release artifact `apk`.
+- #6: release prep: root `.gitignore` (desktop saved rooms, PyInstaller output, keystores), version `1.0.0`, release artifact `apk`;
+- #7: README points to the v1.0.0 release.
 
 **Tested on hardware:**
+- The signed release APK on the phone (after uninstalling the debug build): connect, messages, Room QR scan, Disconnect → Connect.
 - The Windows `.exe` (`build_mqchat.bat`) against the user's real cloud broker: icons, connect, messages with the phone, Room QR scanned by the phone, Disconnect → Connect.
 - Android (Razr, arm64) ↔ desktop client (`../mqchat.py`) ↔ the Kivy app on desktop.
 - Plain and TLS: a pinned self-signed CA through a local proxy, plus public CAs via the test peer.
@@ -128,16 +130,16 @@ Saved rooms are JSON files in `rooms/` relative to the working directory (create
 - `install.sh` on a Proxmox Ubuntu 26.04 VM: self-signed and no TLS, re-runs, `--add-user`, CA key removal, SSH restriction, port change.
 
 **Not tested yet:**
-- the signed release APK;
 - `install.sh` with Let's Encrypt (`BROKER-SETUP.md` says untested);
 - TLS with a publicly trusted certificate on the phone itself.
 
-**Next steps, in order:**
-1. **Signed release APK.** The user creates the keystore (`keytool`), builds with `buildozer android release` (commands above), checks it with `apksigner`, uninstalls the debug app, installs the release one and re-tests: connect, messages, Room QR scan, Disconnect → Connect. The keystore and its password must be backed up off this machine: losing it means no update can install over v1.0.0.
-2. **Tag `v1.0.0` and publish the GitHub Release.** Only after step 1 passes, and on the user's go-ahead.
-   - Artifacts: the release APK, `McutieChat.exe` (built on Windows), and optionally the Linux binary.
-   - README still says "No release yet" and has an unchecked "First release" box.
-   - Windows: `build_mqchat.bat` must run from a Windows folder; cmd can't `cd` into `\\wsl.localhost\...`.
+**Next:** nothing planned; wait for the user.
+
+**For future releases:**
+- Bump `version` in `buildozer.spec`; p4a derives the versionCode from it, so it must increase.
+- Sign every release APK with the same keystore (`~/.android-keys/mcutiechat-release.keystore`, alias `mcutiechat`). The user keeps it and its password backed up off this machine; a different key means users must uninstall and lose their saved rooms.
+- Windows: `build_mqchat.bat` must run from a Windows folder; cmd can't `cd` into `\\wsl.localhost\...`. Name the asset `McutieChat-<version>-windows-x64.exe`.
+- Attach `SHA256SUMS.txt`, and update the README release link before tagging, so the tagged README is right.
 
 **Known issues:**
 - The APK bundles `chardet` 7.6.0 (Kivy → requests) as x86_64 `.so` files. Nothing imports it.
