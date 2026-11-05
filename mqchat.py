@@ -14,13 +14,28 @@ import hashlib
 import time
 import threading
 import os
+import sys
 from datetime import datetime
 from cryptography.fernet import Fernet
 
 class SecureMQTTChat:
+    def _set_window_icon(self):
+        """Window/taskbar icon; next to this script, or inside a PyInstaller bundle"""
+        base = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+        try:
+            ico = os.path.join(base, "mcutie-icon.ico")
+            if os.name == "nt" and os.path.exists(ico):
+                self.root.iconbitmap(default=ico)  # multi-resolution, used for the taskbar too
+            else:
+                self._icon_image = tk.PhotoImage(file=os.path.join(base, "mcutie-icon.png"))
+                self.root.iconphoto(True, self._icon_image)
+        except Exception as e:
+            print(f"Window icon not set: {e}")  # cosmetic only: never stop the app over it
+
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("Mcutie Chat by James Powell")
+        self._set_window_icon()
         self.root.geometry("900x800")
         
         # MQTT and crypto variables
