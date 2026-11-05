@@ -5,15 +5,16 @@ Created by James Powell
 
 Mcutie Chat (formerly MQChat / MQTT Chat) is a lightweight, secure group chat application that uses MQTT as its message relay protocol. Designed for privacy and simplicity, it features end-to-end encryption, room presets, presence tracking, and a GUI-friendly interface built with Python and Tkinter.
 
-> ⚠️ **Compatibility: the desktop and Android clients can't talk to each other right now.**
-> The desktop client (`mqchat.py`, `Linux/mqchat.py`) still uses the old **Fernet** message format. The Android app now uses **AES-256-GCM** with a new key format ([AndroidApp/PROTOCOL.md](AndroidApp/PROTOCOL.md)), so the two **cannot read each other's messages until the desktop client is ported**.
-> Porting the desktop client (AES-256-GCM, plus Room/Key QR import by paste or file) is the next step. **There is no release yet:** one comes once both clients interoperate.
+> ✅ **The desktop client and the Android app talk to each other.** Both speak Mcutie Chat protocol v1 ([AndroidApp/PROTOCOL.md](AndroidApp/PROTOCOL.md)): AES-256-GCM messages, in-person Room/Key QR exchange, and optional TLS to the broker.
+> Clients from before protocol v1 (the old Fernet format) can't read v1 messages, so update every device in a room. **No release yet.**
 
 ---
 
 ## 🧠 Key Features
 
-* 🔐 End-to-end encrypted messages (desktop: Fernet; Android: AES-256-GCM, see the compatibility note above)
+* 🔐 End-to-end encrypted messages (AES-256-GCM), the same on desktop and Android
+* 📷 Share a room in person with a Room QR or Key QR, checked with a read-aloud fingerprint
+* 🔒 Optional TLS to the broker (pinned CA for self-signed brokers, or public CAs)
 * 🌐 MQTT-based real-time message relay
 * 👤 Presence tracking (online/offline status)
 * 💾 Save and load favorite chat rooms
@@ -30,9 +31,10 @@ Mcutie Chat (formerly MQChat / MQTT Chat) is a lightweight, secure group chat ap
 ### 🛠 Requirements
 
 * Python 3.x
-* `paho-mqtt`
-* `cryptography`
-* `tkinter` (included with most Python installations)
+* `paho-mqtt`, `cryptography`, `qrcode`, `pillow`, `certifi`
+* `tkinter` (included with most Python installations; `python3-tk` on Debian/Ubuntu)
+
+The desktop client is one file, `mqchat.py`, for Windows and Linux. Its protocol code is shared with the Android app (`AndroidApp/`), so keep the repo together.
 
 ### 📦 Installation
 
@@ -46,7 +48,7 @@ Mcutie Chat (formerly MQChat / MQTT Chat) is a lightweight, secure group chat ap
 2. Install dependencies:
 
    ```bash
-   pip install paho-mqtt cryptography
+   pip install paho-mqtt cryptography qrcode pillow certifi
    ```
 
 3. Run the app:
@@ -122,13 +124,18 @@ Inside the AndroidApp folder, you'll find installation and build instructions us
 
 ## 🔒 Security Note
 
-The desktop client uses **Fernet encryption** (AES-128 in CBC mode with HMAC for integrity). The Android app uses **AES-256-GCM** with generated 256-bit keys or scrypt-derived passphrases, and supports TLS to the broker. See [AndroidApp/PROTOCOL.md](AndroidApp/PROTOCOL.md). The two formats are not compatible yet. Only users with the same shared encryption key can read each other's messages. Never share your key over insecure channels!
+Both clients use **AES-256-GCM** with generated 256-bit keys or scrypt-derived passphrases, and support TLS to the broker (see [AndroidApp/PROTOCOL.md](AndroidApp/PROTOCOL.md)). Only users with the same room key can read each other's messages. Share keys in person (Room/Key QR) and compare the fingerprint, never over insecure channels.
+
+- The Android app blocks screenshots while a QR is shown; desktops can't, so close the QR window when you're done.
+- The desktop client's saved-rooms file (`mqtt_chat_rooms.json`) is obfuscated with a key built into the code, **not** protected: anyone with access to that file can read the room keys and broker passwords. Keep it private.
 
 ---
 
 ## 🔧 Roadmap
 
-* [ ] **Next:** port the desktop client to AES-256-GCM + Room/Key QR import (paste/load), then the first release
+* [x] Desktop client on protocol v1 (AES-256-GCM, QR exchange, TLS)
+* [ ] First release
+* [ ] Protect the desktop saved-rooms file properly (OS keyring)
 * [ ] Add file/image sharing
 * [ ] Push notifications
 * [ ] Android/Desktop cross-device syncing

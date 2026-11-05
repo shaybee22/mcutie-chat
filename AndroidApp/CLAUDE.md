@@ -79,7 +79,7 @@ paho callbacks (`on_mqtt_connect`, `on_mqtt_message`, ...) run on paho's network
 
 ### Wire protocol
 
-`PROTOCOL.md` is the spec (topics, presence, AES-256-GCM payload, key rules, test vectors). Any change to `chat_crypto.py` or topic/payload handling must update `PROTOCOL.md`, because the separate desktop client (not in this repo) is ported from it. In brief:
+`PROTOCOL.md` is the spec (topics, presence, AES-256-GCM payload, key rules, test vectors). Any change to `chat_crypto.py` or topic/payload handling must update `PROTOCOL.md`. The desktop client (`../mqchat.py`) imports `chat_crypto`, `qr_exchange` and `tls_config` from this folder, so changes here affect both clients; test both. In brief:
 - topics `chat/<room>/messages` and retained, unencrypted `chat/<room>/presence/<username>`;
 - payload = `base64(0x01 || 12-byte nonce || AES-256-GCM ciphertext+tag)`, with the messages topic as AAD;
 - a 44-char base64url key is used raw, anything else goes through scrypt with a room-derived salt.
@@ -94,7 +94,7 @@ Saved rooms are JSON files in `rooms/` relative to the working directory (create
 
 ## Current status (2026-11-04)
 
-The work is split into four phases (1: AES-256-GCM crypto, 2: TLS, 3: QR export, 4: QR camera import). Phases 3/4 were replaced by Step 2 (in-person QR exchange). Do one step at a time and stop after each so the user can test. Use plan mode before editing, keep changes surgical, and commit after each step. The separate desktop client is deferred: change only this app, and keep `PROTOCOL.md` exact so it can be ported later.
+The work is split into four phases (1: AES-256-GCM crypto, 2: TLS, 3: QR export, 4: QR camera import). Phases 3/4 were replaced by Step 2 (in-person QR exchange). Do one step at a time and stop after each so the user can test. Use plan mode before editing, keep changes surgical, and commit after each step. The desktop client (`../mqchat.py`, one file for Windows and Linux) now speaks protocol v1 too, sharing this folder's protocol modules.
 
 **Step 1 (Phase 1, AES-256-GCM): done, tested on hardware.** Phone (Razr, arm64) ↔ desktop (this app under WSLg) messaging in room `chatty` on the test broker. Broker credentials and the test key live only in the gitignored `rooms/chatty.json` and the phone app's own `rooms/`, never in git.
 
@@ -119,6 +119,6 @@ The work is split into four phases (1: AES-256-GCM crypto, 2: TLS, 3: QR export,
 **Known issues:**
 - The APK bundles `chardet` 7.6.0 (Kivy → requests) as x86_64 `.so` files. Nothing imports it.
 - `main.py` uses paho's deprecated callback API v1, which logs a warning.
-- The user's separate desktop client still speaks the old Fernet format.
+- The desktop client's saved-rooms file is obfuscated with a key built into the code, not protected (README notes it; an OS keyring is on the roadmap).
 - ZXing's scan screen opens in landscape (the library's default).
 - A room name from a key QR fills the form unchanged; `save_room` doesn't sanitize names, so a crafted name like `../x` could write outside `rooms/` if the user then taps Save Room. Key-only import itself refuses such names.

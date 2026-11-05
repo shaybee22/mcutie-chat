@@ -5,14 +5,16 @@ By James Powell (aka shaybee22)
 
 Mcutie Chat (formerly MQChat) is a cross-platform, end-to-end encrypted group chat client that uses MQTT as the relay server. This version is built for Linux systems and can be compiled into a single, portable executable using PyInstaller—no Python installation required on the target machine!
 
-> ⚠️ This desktop client still uses the old Fernet message format and can't talk to the current Android app until it's ported. See the [compatibility note](../README.md).
+> ✅ Speaks Mcutie Chat protocol v1, the same as the Android app (AES-256-GCM, Room/Key QR, optional TLS). See the [README](../README.md).
 
 ---
 
 ## 🚀 Features
 
 * 🧠 Fully GUI-based (Tkinter)
-* 🔐 End-to-end encryption using Fernet (AES)
+* 🔐 End-to-end encryption (AES-256-GCM), compatible with the Android app
+* 📷 Show a Room/Key QR for phones to scan, and import one by pasting its text
+* 🔒 Optional TLS to the broker (pinned CA or public CAs)
 * 🧵 Real-time group chat via MQTT broker
 * 💾 Saved room configs with encryption
 * 📥 Import/export rooms
