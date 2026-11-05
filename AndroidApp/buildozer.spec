@@ -7,7 +7,7 @@ title = Mcutie Chat
 package.name = mcutiechat
 
 # (str) Package domain (needed for android/ios packaging)
-package.domain = org.example
+package.domain = org.seumas
 
 # (str) Source code where the main.py live
 source.dir = .

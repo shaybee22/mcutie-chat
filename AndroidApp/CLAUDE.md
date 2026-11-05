@@ -31,7 +31,7 @@ yes | buildozer android debug                   # `yes` accepts the SDK licences
 # Install and launch on the phone. If WSL's `adb devices` is empty (phone attached to Windows,
 # not via usbipd), use Windows' adb.exe with a Windows path: adb.exe install -r "$(wslpath -w bin/...apk)"
 adb install -r bin/mcutiechat-0.3-arm64-v8a-debug.apk
-adb shell monkey -p org.example.mcutiechat -c android.intent.category.LAUNCHER 1
+adb shell monkey -p org.seumas.mcutiechat -c android.intent.category.LAUNCHER 1
 adb logcat -s python:* SDL:* AndroidRuntime:*
 
 # Run the app on the desktop (WSLg). Kivy 2.3.1 has no Python 3.14 wheels, so use the 3.12 venv
