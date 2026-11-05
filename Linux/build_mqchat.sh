@@ -20,7 +20,7 @@ rm -rf dist build mqchat.spec
 echo
 echo "[3/4] Building portable executable..."
 echo "This may take a few minutes..."
-pyinstaller --onefile --windowed --name="McutieChat" --distpath="./portable" mqchat.py
+pyinstaller --onefile --windowed --name="McutieChat" --add-data "mcutie-icon.png:." --distpath="./portable" mqchat.py
 
 if [ $? -ne 0 ]; then
     echo "ERROR: Build failed!"

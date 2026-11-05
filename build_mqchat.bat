@@ -22,7 +22,7 @@ if exist "mqchat.spec" del "mqchat.spec"
 echo.
 echo [3/4] Building portable executable...
 echo This may take a few minutes...
-pyinstaller --onefile --windowed --name="McutieChat" --distpath="./portable" mqchat.py
+pyinstaller --onefile --windowed --name="McutieChat" --icon=mcutie-icon.ico --add-data "mcutie-icon.ico;." --add-data "mcutie-icon.png;." --distpath="./portable" mqchat.py
 
 if %errorlevel% neq 0 (
     echo ERROR: Build failed!

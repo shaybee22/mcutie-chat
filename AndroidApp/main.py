@@ -1,5 +1,6 @@
 import paho.mqtt.client as mqtt
 import json
+import os
 import secrets
 import time
 import threading
@@ -37,6 +38,7 @@ class MQTTChatApp(App):
         
     def build(self):
         self.title = "Mcutie Chat"  # window/task title (Kivy would otherwise derive "MQTTChat")
+        self.icon = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'icon', 'mcutie-icon.png')
         # Create screen manager
         self.screen_manager = ScreenManager()
         
