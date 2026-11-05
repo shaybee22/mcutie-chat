@@ -11,7 +11,7 @@ git clone https://github.com/shaybee22/mcutie-chat && cd mcutie-chat && sudo ./i
 
 It asks a few questions, each with a default (press Enter to accept), configures everything, tests the broker, and prints the settings to enter in the app.
 
-> ⚠️ The Android app and the desktop client currently use different message formats and can't talk to each other yet (see the [README](README.md)). The broker works for both.
+> The broker works for both the Android app and the desktop client; both speak protocol v1 and can share a room.
 
 ## What it asks
 

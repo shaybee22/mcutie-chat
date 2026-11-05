@@ -3,6 +3,9 @@
 Mcutie Chat by James Powell
 A simple encrypted group chat using MQTT as the relay server
 FINAL VERSION - Anti-spam join detection
+
+Speaks Mcutie Chat protocol v1 (AndroidApp/PROTOCOL.md): AES-256-GCM messages, QR room/key
+exchange, optional TLS. The protocol code is shared with the Android app (AndroidApp/).
 """
 
 import tkinter as tk
@@ -15,8 +18,21 @@ import time
 import threading
 import os
 import sys
+import secrets
 from datetime import datetime
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet  # only for the saved-rooms file (legacy format)
+
+# Protocol code shared with the Android app: one copy, so the clients can't drift apart.
+# (A PyInstaller build bundles these modules via --paths AndroidApp.)
+_APP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "AndroidApp")
+if os.path.isdir(_APP_DIR):
+    sys.path.insert(0, _APP_DIR)
+import chat_crypto  # noqa: E402
+import qr_exchange  # noqa: E402
+import tls_config  # noqa: E402
+
+QR_TIMEOUT = 60       # seconds a key/room QR stays on screen
+QR_MAX_VERSION = 25   # larger QR codes may not scan reliably off a screen
 
 class SecureMQTTChat:
     def _set_window_icon(self):
@@ -40,7 +56,7 @@ class SecureMQTTChat:
         
         # MQTT and crypto variables
         self.mqtt_client = None
-        self.cipher = None
+        self.key = None  # 32-byte AES-256-GCM room key
         self.connected = False
         self.username = ""
         self.channel = ""
@@ -102,6 +118,9 @@ class SecureMQTTChat:
         self.key_entry.delete(0, tk.END)
         self.key_entry.insert(0, "supersecretkey123")
         
+        self.tls_var.set(False)
+        self.set_ca("")
+        
         # Clear dropdown selection
         self.rooms_var.set("")
         
@@ -134,7 +153,7 @@ class SecureMQTTChat:
         # Title
         title_label = tk.Label(self.connection_frame, text="Mcutie Chat Configuration", 
                               font=("Arial", 16, "bold"))
-        title_label.pack(pady=20)
+        title_label.pack(pady=12)
         
         # Quick Load Frame
         quick_frame = tk.LabelFrame(self.connection_frame, text="Quick Connect", 
@@ -155,6 +174,9 @@ class SecureMQTTChat:
         load_btn = tk.Button(rooms_frame, text="Load Room", command=self.load_room_config,
                            bg="#4CAF50", fg="white")
         load_btn.pack(side=tk.LEFT, padx=5)
+        
+        import_qr_btn = tk.Button(rooms_frame, text="Import QR text...", command=self.import_qr_text)
+        import_qr_btn.pack(side=tk.LEFT, padx=5)
         
         # Configuration frame
         config_frame = tk.LabelFrame(self.connection_frame, text="Manual Configuration", 
@@ -239,15 +261,37 @@ class SecureMQTTChat:
                                      command=self.toggle_key_visibility)
         show_key_btn.grid(row=6, column=1, sticky="w", padx=5, pady=5)
         
+        # Share the room in person: QR codes for the app's Scan QR
+        qr_buttons_frame = tk.Frame(inner_config)
+        qr_buttons_frame.grid(row=6, column=2, padx=5, pady=5)
+        tk.Button(qr_buttons_frame, text="Key QR", command=self.show_key_qr).pack(side=tk.LEFT, padx=(0, 2))
+        tk.Button(qr_buttons_frame, text="Room QR", command=self.show_room_qr).pack(side=tk.LEFT)
+        
         # Key display area (for easy copying)
         tk.Label(inner_config, text="Share this key:").grid(row=7, column=0, sticky="e", padx=5, pady=5)
         self.key_display = tk.Text(inner_config, height=3, width=35, wrap=tk.WORD, state=tk.DISABLED)
         self.key_display.grid(row=7, column=1, padx=5, pady=5)
         self.update_key_display()
         
+        # TLS (optional): pinned to the CA below if given, else publicly trusted CAs; never unverified
+        tls_frame = tk.LabelFrame(config_frame, text="TLS (Optional)", font=("Arial", 9, "italic"))
+        tls_frame.pack(padx=10, pady=(0, 10), fill=tk.X)
+        # Compact on purpose: the connection tab has to fit the 900x800 window
+        self.tls_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(tls_frame, text="Use TLS", variable=self.tls_var,
+                       command=self.toggle_tls).grid(row=0, column=0, sticky="w", padx=5)
+        self.ca_status = tk.Label(tls_frame, text="", font=("Arial", 8), fg="gray", anchor="w")
+        self.ca_status.grid(row=0, column=1, sticky="ew", padx=5)
+        tk.Button(tls_frame, text="Load CA file...", command=self.load_ca_file).grid(row=0, column=2, sticky="e", padx=5, pady=2)
+        tls_frame.grid_columnconfigure(1, weight=1)
+        self.ca_text = tk.Text(tls_frame, height=2, width=90, font=("Courier", 8))
+        self.ca_text.grid(row=1, column=0, columnspan=3, padx=5, pady=(0, 4))
+        self.ca_text.bind("<KeyRelease>", lambda e: self.update_ca_status())
+        self.update_ca_status()
+
         # Buttons frame
         buttons_frame = tk.Frame(self.connection_frame)
-        buttons_frame.pack(pady=20)
+        buttons_frame.pack(pady=12)
         
         # Save current room button
         save_room_btn = tk.Button(buttons_frame, text="💾 Save Current Room", 
@@ -391,8 +435,9 @@ class SecureMQTTChat:
     def get_config_cipher(self):
         """Get or create cipher for config file encryption"""
         if not self.config_cipher:
-            # Use a fixed key for config encryption (in real app, use keyring/OS keystore)
-            config_key = self.derive_key("mqtt_chat_config_key_v1")
+            # Fixed key built into the code, kept so existing saved-rooms files still load.
+            # This is obfuscation, not protection (anyone with the source can derive it).
+            config_key = base64.urlsafe_b64encode(hashlib.sha256(b"mqtt_chat_config_key_v1").digest())
             self.config_cipher = Fernet(config_key)
         return self.config_cipher
         
@@ -427,6 +472,8 @@ class SecureMQTTChat:
             "encryption_key": key,
             "mqtt_username": self.mqtt_username_entry.get().strip(),
             "mqtt_password": self.mqtt_password_entry.get().strip(),
+            "tls": self.tls_var.get(),
+            "ca": self.get_ca(),
             "saved_date": datetime.now().isoformat()
         }
         
@@ -464,6 +511,10 @@ class SecureMQTTChat:
         
         self.mqtt_password_entry.delete(0, tk.END)
         self.mqtt_password_entry.insert(0, config.get("mqtt_password", ""))
+        
+        # TLS (rooms saved before TLS support have neither field)
+        self.tls_var.set(bool(config.get("tls", False)))
+        self.set_ca(config.get("ca", ""))
         
         self.update_key_display()
         messagebox.showinfo("Loaded", f"Room '{selected_room}' configuration loaded!")
@@ -514,7 +565,16 @@ class SecureMQTTChat:
         else:
             details += f"MQTT Auth: Anonymous\n"
             
-        details += f"Encryption Key: {'*' * len(config['encryption_key'])}\n\n"
+        details += f"Encryption Key: {'*' * len(config['encryption_key'])}\n"
+        if config.get("tls"):
+            ca = config.get("ca", "")
+            try:
+                ca_text = tls_config.describe_ca(ca) if ca else "public CAs"
+            except Exception:
+                ca_text = "invalid CA certificate"
+            details += f"TLS: on ({ca_text})\n\n"
+        else:
+            details += "TLS: off\n\n"
         details += f"Saved: {config.get('saved_date', 'Unknown')}\n"
         
         self.room_details.config(state=tk.NORMAL)
@@ -535,7 +595,7 @@ class SecureMQTTChat:
         # Create edit dialog
         edit_window = tk.Toplevel(self.root)
         edit_window.title(f"Edit Room: {room_name}")
-        edit_window.geometry("400x300")
+        edit_window.geometry("560x430")
         edit_window.transient(self.root)
         edit_window.grab_set()
         
@@ -575,6 +635,13 @@ class SecureMQTTChat:
         key_entry.grid(row=6, column=1, padx=5, pady=5)
         key_entry.insert(0, config["encryption_key"])
         
+        tls_var = tk.BooleanVar(value=bool(config.get("tls", False)))
+        tk.Checkbutton(edit_window, text="Use TLS", variable=tls_var).grid(row=7, column=1, sticky="w", padx=5, pady=5)
+        tk.Label(edit_window, text="CA (PEM):").grid(row=8, column=0, sticky="ne", padx=5, pady=5)
+        ca_box = tk.Text(edit_window, height=4, width=48, font=("Courier", 8))
+        ca_box.grid(row=8, column=1, padx=5, pady=5)
+        ca_box.insert("1.0", config.get("ca", ""))
+        
         def save_changes():
             new_config = {
                 "server": server_entry.get().strip(),
@@ -584,8 +651,14 @@ class SecureMQTTChat:
                 "encryption_key": key_entry.get().strip(),
                 "mqtt_username": mqtt_user_entry.get().strip(),
                 "mqtt_password": mqtt_pass_entry.get().strip(),
+                "tls": tls_var.get(),
+                "ca": ca_box.get("1.0", tk.END).strip(),
                 "saved_date": config.get("saved_date", datetime.now().isoformat())
             }
+            tls_settings = self._tls_settings(new_config["tls"], new_config["ca"])
+            if tls_settings is None:
+                return
+            new_config["ca"] = tls_settings[1]
             
             if not all([new_config["server"], new_config["port"], new_config["channel"], 
                        new_config["username"], new_config["encryption_key"]]):
@@ -600,7 +673,7 @@ class SecureMQTTChat:
         
         # Buttons
         button_frame = tk.Frame(edit_window)
-        button_frame.grid(row=7, column=0, columnspan=2, pady=20)
+        button_frame.grid(row=9, column=0, columnspan=2, pady=20)
         
         tk.Button(button_frame, text="Save Changes", command=save_changes,
                  bg="#4CAF50", fg="white").pack(side=tk.LEFT, padx=5)
@@ -727,10 +800,10 @@ class SecureMQTTChat:
             self.room_details.config(state=tk.DISABLED)
         
     def generate_key(self):
-        """Generate a new encryption key"""
-        key = Fernet.generate_key()
+        """Generate a new random 256-bit room key (base64url)"""
+        key = chat_crypto.generate_key()
         self.key_entry.delete(0, tk.END)
-        self.key_entry.insert(0, key.decode())
+        self.key_entry.insert(0, key)
         self.update_key_display()
         
     def copy_key(self):
@@ -741,6 +814,241 @@ class SecureMQTTChat:
         self.root.update()  # Required on some systems
         messagebox.showinfo("Copied", "Encryption key copied to clipboard!")
         
+    # ---------------------------------------------------------------- QR exchange
+    def _room_fingerprint(self, key, room):
+        return chat_crypto.fingerprint(chat_crypto.key_from_input(key, room))
+
+    @staticmethod
+    def _qr_version(payload):
+        """QR version the payload needs at error-correction level L, or None if it can't fit"""
+        import qrcode
+        from qrcode.exceptions import DataOverflowError
+        qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_L)
+        qr.add_data(payload)
+        try:
+            qr.make(fit=True)
+        except DataOverflowError:
+            return None
+        return qr.version
+
+    def show_key_qr(self):
+        """Key-only QR (room + key) for people already on the broker"""
+        room = self.channel_entry.get().strip()
+        key = self.key_entry.get().strip()
+        if not room or not key:
+            messagebox.showerror("Key QR", "Channel and encryption key are required for a Key QR.")
+            return
+        self._show_qr_window("Room Key QR Code", "Scan with Mcutie Chat (Scan QR)\nto import this room key",
+                             qr_exchange.build_key(room, key), self._room_fingerprint(key, room))
+
+    def show_room_qr(self):
+        """Full-room QR (broker, login, TLS, room, key) so a new user can join with one scan"""
+        server = self.server_entry.get().strip()
+        room = self.channel_entry.get().strip()
+        key = self.key_entry.get().strip()
+        try:
+            port = int(self.port_entry.get().strip())
+            if not 1 <= port <= 65535:
+                raise ValueError
+        except ValueError:
+            messagebox.showerror("Room QR", "Port must be a number from 1 to 65535.")
+            return
+        if not server or not room or not key:
+            messagebox.showerror("Room QR", "Server, channel and encryption key are required for a Room QR.")
+            return
+        tls_settings = self._tls_settings(self.tls_var.get(), self.get_ca())
+        if tls_settings is None:
+            return
+        tls, ca = tls_settings
+        payload = qr_exchange.build_room(server, port, room, key, self.mqtt_username_entry.get().strip(),
+                                         self.mqtt_password_entry.get().strip(), tls=tls, ca=ca)
+        version = self._qr_version(payload)
+        if version is None:
+            messagebox.showerror("Room QR", "This room's settings are too large for a QR code.\n\n"
+                                            "An EC P-256 CA certificate is much smaller than an RSA one.")
+            return
+        warning = ("This QR contains the broker password and the room key.\n\n"
+                   "Show it only to people you'd give both to.")
+        if version > QR_MAX_VERSION:
+            warning += (f"\n\nThis QR is large (version {version}) and may not scan reliably from a screen. "
+                        "An EC P-256 CA keeps it small.")
+        if not messagebox.askyesno("Show Room QR?", warning + "\n\nShow it now?"):
+            return
+        self._show_qr_window("Room QR Code", "Scan with Mcutie Chat (Scan QR)\nto join this room",
+                             payload, self._room_fingerprint(key, room))
+
+    def _show_qr_window(self, title, instructions, payload, fingerprint):
+        """QR in a window, built in memory only, with fingerprint and auto-close"""
+        import qrcode
+        from PIL import Image, ImageTk
+        qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_L, box_size=1, border=4)
+        qr.add_data(payload)
+        qr.make(fit=True)
+        # Whole pixels per module: fractional scaling makes modules uneven and unscannable
+        modules = qr.modules_count + 2 * qr.border
+        px = max(2, 480 // modules)
+        img = qr.make_image(fill_color="black", back_color="white").get_image().convert("RGB")
+        img = img.resize((modules * px, modules * px), Image.NEAREST)
+
+        win = tk.Toplevel(self.root)
+        win.title(title)
+        win.transient(self.root)
+        win.resizable(False, False)
+        tk.Label(win, text=instructions, font=("Arial", 11)).pack(padx=20, pady=(15, 8))
+        photo = ImageTk.PhotoImage(img)
+        tk.Label(win, image=photo, bd=0).pack(padx=20)
+        win.photo = photo  # keep a reference while shown
+        tk.Label(win, text=f"Fingerprint: {fingerprint}", font=("Arial", 14, "bold")).pack(pady=(10, 2))
+        countdown = tk.Label(win, text=f"Closes in {QR_TIMEOUT} s", fg="gray")
+        countdown.pack()
+        remaining = [QR_TIMEOUT]
+        timer = [None]
+
+        def close():
+            if timer[0]:
+                win.after_cancel(timer[0])
+            win.photo = None
+            win.destroy()
+
+        def tick():
+            remaining[0] -= 1
+            if remaining[0] <= 0:
+                close()
+                return
+            countdown.config(text=f"Closes in {remaining[0]} s")
+            timer[0] = win.after(1000, tick)
+
+        tk.Button(win, text="Close", width=12, command=close).pack(pady=12)
+        win.protocol("WM_DELETE_WINDOW", close)
+        timer[0] = win.after(1000, tick)
+        return win
+
+    def import_qr_text(self):
+        """Paste a Room/Key QR payload (the text a phone's QR reader shows) and import it"""
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Import from QR text")
+        dlg.transient(self.root)
+        dlg.grab_set()
+        tk.Label(dlg, text="Paste the text of a Mcutie Chat Room QR or Key QR\n"
+                           "(e.g. read with a phone's camera app):").pack(padx=15, pady=(12, 5))
+        box = tk.Text(dlg, height=8, width=70, font=("Courier", 9))
+        box.pack(padx=15)
+        box.focus_set()
+
+        def do_import():
+            text = box.get("1.0", tk.END).strip()
+            try:
+                data = qr_exchange.parse(text)
+            except ValueError as e:
+                messagebox.showerror("Import from QR text", str(e), parent=dlg)
+                return
+            fingerprint = self._room_fingerprint(data["key"], data["room"])
+            if data["type"] == qr_exchange.TYPE_ROOM:
+                if not data["tls"]:
+                    tls_text = "off"
+                elif data["ca"]:
+                    tls_text = f"on, CA: {tls_config.describe_ca(data['ca'])}"
+                else:
+                    tls_text = "on, publicly trusted CAs"
+                details = (f"Room: {data['room']}\nServer: {data['host']}:{data['port']}\n"
+                           f"MQTT user: {data['mqtt_user'] or '(anonymous)'}\nTLS: {tls_text}")
+            else:
+                details = f"Room key for: {data['room']}"
+            if not messagebox.askyesno("Import from QR?", f"{details}\n\nFingerprint: {fingerprint}\n\n"
+                                       "Check it matches the other person's screen. Import?", parent=dlg):
+                return
+            dlg.destroy()
+            self._apply_qr_import(data)
+
+        buttons = tk.Frame(dlg)
+        buttons.pack(pady=10)
+        tk.Button(buttons, text="Import", width=10, command=do_import).pack(side=tk.LEFT, padx=5)
+        tk.Button(buttons, text="Cancel", width=10, command=dlg.destroy).pack(side=tk.LEFT, padx=5)
+        return dlg
+
+    def _apply_qr_import(self, data):
+        """Fill the connection form from a confirmed QR payload"""
+        def put(entry, value):
+            entry.delete(0, tk.END)
+            entry.insert(0, value)
+        put(self.channel_entry, data["room"])
+        put(self.key_entry, data["key"])
+        self.update_key_display()
+        if data["type"] == qr_exchange.TYPE_ROOM:
+            put(self.server_entry, data["host"])
+            put(self.port_entry, str(data["port"]))
+            put(self.mqtt_username_entry, data["mqtt_user"])
+            put(self.mqtt_password_entry, data["mqtt_pass"])
+            self.tls_var.set(data["tls"])
+            self.set_ca(data["ca"])
+            self.username_entry.delete(0, tk.END)  # the QR never carries a chat name
+            messagebox.showinfo("Imported", "Room imported.\n\nEnter your chat username, then Connect.")
+            return
+        # Key only: offer to update saved rooms that use this channel
+        matching = [name for name, cfg in self.saved_rooms.items() if cfg.get("channel") == data["room"]]
+        if matching and messagebox.askyesno("Update saved rooms?",
+                                            "Also update the key in these saved rooms?\n\n" + "\n".join(matching)):
+            for name in matching:
+                self.saved_rooms[name]["encryption_key"] = data["key"]
+            self.save_rooms_to_file()
+            messagebox.showinfo("Imported", f"Key imported and {len(matching)} saved room(s) updated.")
+        else:
+            messagebox.showinfo("Imported", f"Key imported for channel '{data['room']}'.")
+
+    def toggle_tls(self):
+        """Switch the default port when TLS is toggled; leave custom ports alone"""
+        port = self.port_entry.get().strip()
+        if self.tls_var.get() and port in ("", "1883"):
+            self.port_entry.delete(0, tk.END); self.port_entry.insert(0, "8883")
+        elif not self.tls_var.get() and port == "8883":
+            self.port_entry.delete(0, tk.END); self.port_entry.insert(0, "1883")
+
+    def get_ca(self):
+        return self.ca_text.get("1.0", tk.END).strip()
+
+    def set_ca(self, pem):
+        self.ca_text.delete("1.0", tk.END)
+        if pem:
+            self.ca_text.insert("1.0", pem)
+        self.update_ca_status()
+
+    def update_ca_status(self):
+        """Describe the CA in the box, or say what's wrong with it"""
+        pem = self.get_ca()
+        if not pem:
+            self.ca_status.config(text="Broker CA (PEM) below - leave empty for publicly trusted brokers", fg="gray")
+            return
+        try:
+            self.ca_status.config(text=tls_config.describe_ca(tls_config.validate_ca_pem(pem)), fg="dark green")
+        except Exception as e:
+            self.ca_status.config(text=f"Invalid CA: {e}", fg="red")
+
+    def load_ca_file(self):
+        """Read a CA certificate file into the CA box"""
+        from tkinter import filedialog
+        path = filedialog.askopenfilename(title="Broker CA certificate",
+                                          filetypes=[("Certificates", "*.pem *.crt *.cer"), ("All files", "*.*")])
+        if not path:
+            return
+        try:
+            with open(path) as f:
+                self.set_ca(tls_config.validate_ca_pem(f.read()))
+        except Exception as e:
+            messagebox.showerror("CA certificate", f"Couldn't load the CA certificate:\n{e}")
+
+    def _tls_settings(self, tls, ca):
+        """(tls, normalized ca) or None after showing an error"""
+        if ca and not tls:
+            messagebox.showerror("TLS", "Turn on TLS to use a CA certificate.")
+            return None
+        if ca:
+            try:
+                ca = tls_config.validate_ca_pem(ca)
+            except ValueError as e:
+                messagebox.showerror("TLS", f"Invalid CA certificate:\n{e}")
+                return None
+        return tls, ca
+
     def toggle_mqtt_password_visibility(self):
         """Toggle showing/hiding the MQTT password"""
         if self.show_mqtt_password_var.get():
@@ -766,13 +1074,6 @@ class SecureMQTTChat:
         # Bind key entry changes to update display
         self.key_entry.bind('<KeyRelease>', lambda e: self.update_key_display())
         
-    def derive_key(self, password):
-        """Derive a Fernet key from a password"""
-        # Use SHA256 to create a 32-byte key, then base64 encode for Fernet
-        hash_obj = hashlib.sha256(password.encode())
-        key = base64.urlsafe_b64encode(hash_obj.digest())
-        return key
-        
     def connect_mqtt(self):
         """Connect to MQTT broker"""
         try:
@@ -790,18 +1091,23 @@ class SecureMQTTChat:
             if not all([server, self.channel, self.username, encryption_key]):
                 messagebox.showerror("Error", "Please fill in all required fields")
                 return
+            tls_settings = self._tls_settings(self.tls_var.get(), self.get_ca())
+            if tls_settings is None:
+                return
+            use_tls, ca_pem = tls_settings
                 
-            # Setup encryption
-            key = self.derive_key(encryption_key)
-            self.cipher = Fernet(key)
+            # Setup encryption: generated keys are used directly, passphrases go through scrypt
+            self.key = chat_crypto.key_from_input(encryption_key, self.channel)
             
             # Setup topics
             self.messages_topic = f"chat/{self.channel}/messages"
             self.presence_topic = f"chat/{self.channel}/presence"
             self.userlist_topic = f"chat/{self.channel}/users"
             
-            # Setup MQTT client (fix deprecation warning)
-            self.mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
+            # Setup MQTT client. Random client ID per connection (never derived from the name
+            # or room), so people sharing a room QR - or a stale client - never collide.
+            self.client_id = "mqttchat-" + secrets.token_hex(8)
+            self.mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, client_id=self.client_id)
             self.mqtt_client.on_connect = self.on_mqtt_connect
             self.mqtt_client.on_message = self.on_mqtt_message
             self.mqtt_client.on_disconnect = self.on_mqtt_disconnect
@@ -813,6 +1119,11 @@ class SecureMQTTChat:
             else:
                 self.add_system_message("Connecting with anonymous MQTT access")
             
+            # TLS: pinned to the room's CA if it has one, else the certifi list; never unverified
+            if use_tls:
+                self.mqtt_client.tls_set_context(tls_config.make_ssl_context(ca_pem or None))
+                self.add_system_message("Using TLS" + (" (pinned CA)" if ca_pem else " (public CAs)"))
+
             # Set last will (sent when we disconnect unexpectedly)
             will_msg = json.dumps({"user": self.username, "status": "offline", "timestamp": time.time()})
             self.mqtt_client.will_set(f"{self.presence_topic}/{self.username}", will_msg, retain=True)
@@ -856,6 +1167,7 @@ class SecureMQTTChat:
             
             # Add welcome message
             self.add_system_message("Connected to chat!")
+            self.add_system_message(f"Room key fingerprint: {chat_crypto.fingerprint(self.key)}")
             
         else:
             self.status_label.config(text=f"Connection failed (code {rc})", fg="red")
@@ -884,9 +1196,8 @@ class SecureMQTTChat:
     def handle_chat_message(self, encrypted_payload):
         """Handle incoming chat message"""
         try:
-            # Decrypt message
-            encrypted_data = base64.b64decode(encrypted_payload.encode())
-            decrypted_data = self.cipher.decrypt(encrypted_data)
+            # Decrypt message (AES-256-GCM, bound to this room's topic)
+            decrypted_data = chat_crypto.decrypt(self.key, encrypted_payload, self.messages_topic)
             message_data = json.loads(decrypted_data.decode())
             
             username = message_data.get("user", "Unknown")
@@ -984,10 +1295,9 @@ class SecureMQTTChat:
                 "timestamp": time.time()
             }
             
-            # Encrypt message
+            # Encrypt message (AES-256-GCM, bound to this room's topic)
             json_data = json.dumps(message_data)
-            encrypted_data = self.cipher.encrypt(json_data.encode())
-            encrypted_payload = base64.b64encode(encrypted_data).decode()
+            encrypted_payload = chat_crypto.encrypt(self.key, json_data.encode(), self.messages_topic)
             
             # Publish to MQTT
             self.mqtt_client.publish(self.messages_topic, encrypted_payload)
@@ -1031,9 +1341,10 @@ class SecureMQTTChat:
                     time.sleep(0.5)  # Give time for message to send
                     self.clear_my_presence()  # Clear our retained presence
                     
-                    # Stop the MQTT loop and disconnect
-                    self.mqtt_client.loop_stop()
+                    # Disconnect, then stop the loop (in this order the DISCONNECT packet is
+                    # actually sent, so the broker doesn't fire our Last Will)
                     self.mqtt_client.disconnect()
+                    self.mqtt_client.loop_stop()
                     
                 # Cancel heartbeat timer
                 if self.heartbeat_timer:
@@ -1046,9 +1357,10 @@ class SecureMQTTChat:
                 # Update GUI in main thread
                 self.root.after(0, self._finish_disconnect)
         
-        # Update status immediately
+        # Update status immediately. Don't clear self.connected here: the worker checks it to
+        # decide whether to disconnect (clearing it first left the old client running);
+        # _finish_disconnect and on_mqtt_disconnect reset it afterwards.
         self.status_label.config(text="Disconnecting...", fg="orange")
-        self.connected = False
         
         # Run disconnect in background thread to avoid GUI freeze
         disconnect_thread = threading.Thread(target=_disconnect_worker, daemon=True)
@@ -1099,8 +1411,8 @@ class SecureMQTTChat:
                     self.announce_presence("offline")
                     time.sleep(0.5)  # Give time for message to send
                     self.clear_my_presence()  # Clear our retained presence
-                    self.mqtt_client.loop_stop()
                     self.mqtt_client.disconnect()
+                    self.mqtt_client.loop_stop()
                 if self.heartbeat_timer:
                     self.heartbeat_timer.cancel()
             except:
@@ -1109,8 +1421,8 @@ class SecureMQTTChat:
                 # Destroy window in main thread
                 self.root.after(0, self.root.destroy)
         
-        # Set connected to False immediately
-        self.connected = False
+        # (self.connected stays as it is: the cleanup thread checks it to decide whether to
+        # announce offline and disconnect)
         
         # Run cleanup in background thread
         cleanup_thread = threading.Thread(target=_cleanup_and_exit, daemon=True)
@@ -1129,10 +1441,12 @@ if __name__ == "__main__":
     try:
         import paho.mqtt.client as mqtt
         from cryptography.fernet import Fernet
+        import qrcode, certifi  # noqa: F401
+        from PIL import Image, ImageTk  # noqa: F401
     except ImportError as e:
         print(f"Missing required package: {e}")
         print("\nPlease install required packages:")
-        print("pip install paho-mqtt cryptography")
+        print("pip install paho-mqtt cryptography qrcode pillow certifi")
         input("Press Enter to exit...")
         exit(1)
         

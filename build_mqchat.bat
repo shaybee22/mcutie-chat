@@ -1,12 +1,14 @@
 @echo off
+rem Builds the desktop client (mqchat.py) into a single Windows executable.
+cd /d "%~dp0"
 echo ========================================
 echo    Mcutie Chat Portable Executable Builder
 echo    By James Powell
 echo ========================================
 echo.
 
-echo [1/4] Installing PyInstaller...
-pip install pyinstaller
+echo [1/4] Installing PyInstaller and the app's packages...
+pip install pyinstaller paho-mqtt cryptography qrcode pillow certifi
 if %errorlevel% neq 0 (
     echo ERROR: Failed to install PyInstaller
     pause
@@ -22,7 +24,8 @@ if exist "mqchat.spec" del "mqchat.spec"
 echo.
 echo [3/4] Building portable executable...
 echo This may take a few minutes...
-pyinstaller --onefile --windowed --name="McutieChat" --icon=mcutie-icon.ico --add-data "mcutie-icon.ico;." --add-data "mcutie-icon.png;." --distpath="./portable" mqchat.py
+rem --paths: the protocol modules (chat_crypto, qr_exchange, tls_config) are shared with the Android app
+pyinstaller --onefile --windowed --name="McutieChat" --paths AndroidApp --icon=mcutie-icon.ico --add-data "mcutie-icon.ico;." --add-data "mcutie-icon.png;." --distpath="./portable" mqchat.py
 
 if %errorlevel% neq 0 (
     echo ERROR: Build failed!
