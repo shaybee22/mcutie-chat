@@ -10,6 +10,7 @@ from kivy.uix.popup import Popup
 from kivy.clock import Clock
 from kivy.app import App
 from kivy.core.window import Window
+from kivy.utils import escape_markup
 from datetime import datetime
 
 # Set keyboard behavior for Android - MUST be early
@@ -213,6 +214,8 @@ class MQTTChatScreen(Screen):
         # Format message with better mobile-friendly styling
         # Use different colors for different users
         username_color = "4488ff" if username != self.username else "44aa44"
+        username = escape_markup(username)
+        message_text = escape_markup(message_text)
         formatted_message = f"[color=888888][size=12sp]{time_str}[/size][/color]\n[color={username_color}][size=14sp][b]{username}:[/b][/color] [size=14sp]{message_text}[/size]"
         
         if self.message_log.text:
@@ -225,7 +228,8 @@ class MQTTChatScreen(Screen):
         timestamp = time.time()
         time_str = datetime.fromtimestamp(timestamp).strftime("%I:%M %p")
         
-        # System messages with distinct styling
+        # System messages with distinct styling (escaped: presence usernames come from any broker user)
+        message_text = escape_markup(message_text)
         formatted_message = f"[color=888888][size=12sp]{time_str}[/size][/color]\n[color=00aa00][size=13sp][i]* {message_text}[/i][/size][/color]"
         
         if self.message_log.text:

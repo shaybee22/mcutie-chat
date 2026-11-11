@@ -509,8 +509,11 @@ write_config() {
         echo "per_listener_settings false"
         echo "allow_anonymous false"
         echo "password_file $PASSWD_FILE"
+        echo "max_packet_size 32768"
+        echo "max_queued_messages 200"
         echo ""
         echo "listener $PORT"
+        echo "max_connections 200"
         if [[ $TLS_MODE != none ]]; then
             echo "cafile $SRV_CA"
             echo "certfile $SRV_PEM"
