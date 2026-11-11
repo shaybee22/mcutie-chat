@@ -389,8 +389,10 @@ class KeystoreCipher:
                 raise NoScreenLockError()
             kp = self._KeyProperties
             builder = self._Builder(KEY_ALIAS, kp.PURPOSE_ENCRYPT | kp.PURPOSE_DECRYPT)
-            builder.setBlockModes([kp.BLOCK_MODE_GCM])
-            builder.setEncryptionPaddings([kp.ENCRYPTION_PADDING_NONE])
+            # String... varargs: pass the strings themselves. pyjnius packs them into the
+            # array; a Python list would be stored as a String[] inside it and abort the app.
+            builder.setBlockModes(kp.BLOCK_MODE_GCM)
+            builder.setEncryptionPaddings(kp.ENCRYPTION_PADDING_NONE)
             builder.setKeySize(256)
             builder.setUserAuthenticationRequired(True)
             if self._SDK_INT >= 30:
