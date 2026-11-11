@@ -63,7 +63,8 @@ android.archs = arm64-v8a
 android.release_artifact = apk
 
 # (bool) enables Android auto backup feature (Android API >=23)
-android.allow_backup = True
+# Off: saved rooms hold room keys and MQTT passwords in plaintext
+android.allow_backup = False
 
 # (str) Local p4a recipe overrides (cryptography: link the Rust extension against libpython)
 p4a.local_recipes = ./p4a-recipes
