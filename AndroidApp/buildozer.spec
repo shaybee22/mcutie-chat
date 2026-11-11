@@ -54,7 +54,8 @@ orientation = portrait
 fullscreen = 0
 
 # (list) Permissions
-android.permissions = INTERNET, ACCESS_NETWORK_STATE, CAMERA
+# USE_BIOMETRIC: the saved-rooms unlock prompt (granted at install, no runtime prompt)
+android.permissions = INTERNET, ACCESS_NETWORK_STATE, CAMERA, USE_BIOMETRIC
 
 # (list) The Android archs to build for, choices: armeabi-v7a, arm64-v8a, x86, x86_64
 android.archs = arm64-v8a
@@ -68,6 +69,9 @@ android.allow_backup = False
 
 # (str) Local p4a recipe overrides (cryptography: link the Rust extension against libpython)
 p4a.local_recipes = ./p4a-recipes
+
+# (str) Java sources: the BiometricPrompt callback for android_auth.py (pyjnius can't subclass it)
+android.add_src = src
 
 # (list) Gradle dependencies: ZXing QR scanner (Java/AAR, no native recipe), used by android_qr.py.
 # zxing-android-embedded doesn't ship AndroidX; its CaptureActivity needs androidx.core at runtime
