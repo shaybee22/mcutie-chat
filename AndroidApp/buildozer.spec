@@ -60,6 +60,15 @@ android.permissions = INTERNET, ACCESS_NETWORK_STATE, CAMERA, USE_BIOMETRIC
 # (list) The Android archs to build for, choices: armeabi-v7a, arm64-v8a, x86, x86_64
 android.archs = arm64-v8a
 
+# (int) Minimum API: 30 (Android 11). Saved rooms need a per-use Keystore key that accepts
+# a strong biometric or the screen-lock PIN with a BiometricPrompt CryptoObject (API 30+).
+android.minapi = 30
+# (int) NDK API for the native recipes: kept at 24 (it would follow minapi) so the tested native
+# builds (Python, cryptography's Rust extension) don't change; they run on any newer Android.
+android.ndk_api = 24
+# p4a refuses minsdk != the dist's NDK API unless told; 30 > 24 is the safe direction.
+p4a.extra_args = --allow-minsdk-ndkapi-mismatch
+
 # (str) Release build format: apk for direct download (buildozer's default is aab, for Play Store)
 android.release_artifact = apk
 

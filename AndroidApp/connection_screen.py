@@ -943,8 +943,8 @@ Key: {self.key_input.text if self.key_input.text else 'None'}"""
             return []
 
     def _with_store(self, action, on_ok=None, on_locked=None, _retry=True):
-        """Run a saved-rooms action. If the Keystore key needs authentication,
-        prompt and retry once. Never lets a storage error escape."""
+        """Run a saved-rooms action. If saved rooms are locked, prompt once and
+        retry. Never lets a storage error escape."""
         try:
             result = action()
         except room_store.LockedError:
@@ -953,12 +953,8 @@ Key: {self.key_input.text if self.key_input.text else 'None'}"""
                 if on_locked:
                     on_locked()
                 return
-            def unlocked(outcome):
-                if outcome == "ok":
-                    self._with_store(action, on_ok, on_locked, _retry=False)
-                elif on_locked:
-                    on_locked()
-            android_auth.unlock(unlocked)
+            self._unlock(lambda: self._with_store(action, on_ok, on_locked, _retry=False),
+                         on_locked)
             return
         except room_store.InvalidatedError:
             self._show_locked()
@@ -978,6 +974,23 @@ Key: {self.key_input.text if self.key_input.text else 'None'}"""
             return
         if on_ok:
             on_ok(result)
+
+    def _unlock(self, then, on_locked=None):
+        """One fingerprint/PIN prompt unwraps the saved-rooms data key for this
+        app session (the Keystore key needs a fresh prompt for every use)"""
+        def prompt():
+            cipher = room_store.begin_unlock()
+            def done(outcome):
+                if outcome == "ok":
+                    self._with_store(lambda: room_store.finish_unlock(cipher),
+                                     lambda _: then(), on_locked, _retry=False)
+                    return
+                if outcome == "error":
+                    self.show_popup("Could not show the unlock prompt.")
+                if on_locked:
+                    on_locked()
+            android_auth.authenticate(cipher, done)
+        self._with_store(prompt, None, on_locked, _retry=False)
 
     def _set_room_list(self, rooms=None):
         """Show saved rooms in the spinner (after an unlock or a change)"""
