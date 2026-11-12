@@ -20,6 +20,7 @@ python connection_screen.py
 python3 chat_crypto.py
 ~/.venvs/mqttpeer/bin/python qr_exchange.py     # needs cryptography (CA validation)
 ~/.venvs/mqttpeer/bin/python tls_config.py      # needs cryptography + certifi
+~/.venvs/mqttpeer/bin/python room_store.py      # saved-room store, with a fake Keystore cipher (needs cryptography)
 
 # Build Android APK (config in buildozer.spec); output: bin/mcutiechat-1.0.0-arm64-v8a-debug.apk
 source ~/.venvs/buildozer/bin/activate          # must be activated (VIRTUAL_ENV set), not just on PATH
@@ -40,7 +41,8 @@ yes | buildozer android release
 # Install and launch on the phone. If WSL's `adb devices` is empty (phone attached to Windows,
 # not via usbipd), use Windows' adb.exe with a Windows path: adb.exe install -r "$(wslpath -w bin/...apk)"
 # Debug and release builds have different signatures: switching needs `adb uninstall org.seumas.mcutiechat`
-# first, which deletes the phone's saved rooms.
+# first, which deletes the phone's saved rooms. Builds up to v1.0.0 kept rooms in files/app/rooms, which
+# p4a deletes when any updated APK first starts, so `install -r` lost them too (see Persistence).
 adb install -r bin/mcutiechat-1.0.0-arm64-v8a-debug.apk
 adb shell monkey -p org.seumas.mcutiechat -c android.intent.category.LAUNCHER 1
 adb logcat -s python:* SDL:* AndroidRuntime:*
@@ -63,7 +65,8 @@ Build quirks (all with p4a master + Python 3.14 host, Oct 2026):
 - `cryptography` uses a local recipe override (`p4a-recipes/cryptography/`, via `p4a.local_recipes`) that links its Rust extension against libpython; without it the module fails to load on Android (`cannot locate symbol "PyExc_TypeError"`).
 - p4a's resolver only honours pins written with underscores (`paho_mqtt==2.1.0`, `charset_normalizer`); a hyphenated name gets the latest wheel added as well.
 - The QR scanner is `com.journeyapps:zxing-android-embedded` via `android.gradle_dependencies` (Java only, no recipe). It doesn't ship AndroidX, so `androidx.core:core` is listed too. Don't `autoclass` its `IntentIntegrator`: that needs `androidx.fragment` and crashes at import. `android_qr.py` starts `CaptureActivity` with a plain Intent instead.
-- pyjnius picks overloads by argument type and can choose wrongly (e.g. `Intent.setClassName(Context, String)`). Prefer overloads that take only strings or primitives. Exceptions raised inside `@run_on_ui_thread` code are only logged, so report them back to the Kivy thread.
+- pyjnius picks overloads by argument type and can choose wrongly (e.g. `Intent.setClassName(Context, String)`). Prefer overloads that take only strings or primitives. It doesn't check assignability: an object argument scores the same for every overload of that arity unless its wrapped class matches the declared parameter type exactly, so `cast()` objects to the declared type (`cast("java.security.spec.AlgorithmParameterSpec", GCMParameterSpec(...))`). A wrong pick aborts the app. For `String...` varargs pass the strings themselves (`setBlockModes("GCM")`): pyjnius packs them into the array, and a Python list ends up as a `String[]` inside it, which aborts the app (`ArrayStoreException` in JNI, not catchable). Exceptions raised inside `@run_on_ui_thread` code are only logged, so report them back to the Kivy thread.
+- `BiometricPrompt.AuthenticationCallback` is an abstract class, and pyjnius can only implement interfaces. `src/org/seumas/mcutiechat/AuthCallback.java` (via `android.add_src = src`) forwards it to the `AuthListener` interface, which `android_auth.py` implements with a `PythonJavaClass` (`__javacontext__ = "app"`).
 - p4a reuses the built dist in `.buildozer/android/platform/build-arm64-v8a/dists/mcutiechat`; after changing a recipe, delete that dist and the recipe's `build/other_builds/<recipe>` directory, or the APK won't change.
 
 A local broker (e.g. `mosquitto` on `localhost:1883`, the UI defaults) is needed to exercise the chat flow.
@@ -82,6 +85,8 @@ No `.kv` files — all UI is built in Python in `__init__`.
 - `qr_exchange.py` — builds and validates the two QR payloads (`mqttchat-key`, `mqttchat-room`; no Kivy imports). Scanned text is untrusted: it's validated here and escaped before display.
 - `tls_config.py` — TLS client context (no Kivy imports): pinned to the room's CA if it has one, otherwise the certifi list. Always verified, hostname checked, TLS 1.2+, strict X.509. Also validates and describes CA PEMs.
 - `android_qr.py` — Android-only: FLAG_SECURE on the window while a QR is shown, and the ZXing scanner (result via `android.activity.bind(on_activity_result=...)`). Does nothing on desktop.
+- `room_store.py` — saved rooms (no Kivy imports): location, Keystore encryption, migration. See Persistence.
+- `android_auth.py` — Android-only: the `BiometricPrompt` with a `CryptoObject` that authorizes one use of the saved-rooms Keystore key (strong biometric or screen-lock PIN). Reports "error" on desktop, where nothing locks.
 - `chat_screen.py` — renders messages into a single markup `Label` inside a `ScrollView`; the app pushes updates via `add_chat_message`, `add_system_message`, `update_users_list`.
 
 ### Threading
@@ -101,7 +106,15 @@ Own messages are rendered locally on send; incoming messages from the same usern
 
 ### Persistence
 
-Saved rooms are JSON files in `rooms/` relative to the working directory (created at import time of `connection_screen.py`). They store the encryption key and MQTT password in plaintext.
+`room_store.py` holds all saved-room file access; `connection_screen.py` calls it through `_with_store`, which prompts and retries once when the key is locked and never lets a storage error escape.
+
+- **Where:** `<App.user_data_dir>/rooms`. On Android that is `files/rooms`. Never under `files/app`: p4a deletes `files/app` the first time each new build starts (`unpackAsset(..., true)` in its `PythonActivity.java`, triggered by `private_version`, which includes the build time). That is how v1.0.0's `./rooms` was lost on every update, and why v1.0.0 rooms can't be migrated (they're gone before Python runs). Desktop: `~/.config/mqttchat/rooms`.
+- **Android format (needs API 30, `android.minapi = 30`; `android.ndk_api` stays 24 so the native builds don't change):** `<16 random hex>.room` = `0x02 || 12-byte nonce || AES-256-GCM ciphertext+tag` of `{"name": ..., "room": {...}}`, AAD `mcutiechat-room:<file id>`, encrypted in Python with the data key. Room names are inside the ciphertext, so nothing is listed while locked.
+- **Keys:** a wrapping key in the Android Keystore, alias `mcutiechat-rooms-kek`, non-exportable, `setUserAuthenticationParameters(0, BIOMETRIC_STRONG | DEVICE_CREDENTIAL)`: every use needs its own prompt bound to that `Cipher` (CryptoObject); unlocking the phone doesn't count. It wraps a random 32-byte data key in `files/rooms/datakey.bin` (`0x01 || 12-byte IV || AES-GCM(data key)+tag`, AAD `mcutiechat-datakey`). One prompt per app session unwraps the data key into memory (`room_store.begin_unlock()` → `android_auth.authenticate()` → `finish_unlock()`); `main.py`'s `on_pause`/`on_stop` call `room_store.lock()`, which zeroes and drops it. Creating the wrapping key needs a secure screen lock; without one, saving shows "Set a screen lock to save rooms". Removing the screen lock invalidates it: the app offers to clear the saved rooms (files, `datakey.bin`, both aliases). Fingerprint changes don't.
+- **UI:** the spinner says "Locked - tap to unlock" until the first tap of each session unlocks (no prompt at app start). Cancel leaves it locked; manual entry and QR scan still work. Going to the background (including opening the QR scanner) locks again.
+- **Migration (after each unlock, until nothing is left):** version-1 `.room` files (the earlier format: encrypted directly by the 5-minute Keystore key `mcutiechat-rooms`) are decrypted with that key (the prompt that just succeeded counts as recent auth for it), re-encrypted as version 2, checked, then deleted; the old alias is deleted when none remain. Plaintext `*.json` in the rooms folder or the old `./rooms` is encrypted, checked, then deleted. Names that already exist are skipped and the old file left alone.
+- **Desktop/dev:** no Keystore, so plaintext `<name>.json` as before (`valid_name` refuses slashes, `.` and `..`). Android never falls back to plaintext: without a Keystore, saved rooms are disabled.
+- Never print room contents, keys or Java exception messages; `room_store` errors are fixed strings.
 
 ## Current status (2026-11-05)
 
@@ -147,5 +160,5 @@ Saved rooms are JSON files in `rooms/` relative to the working directory (create
 - `main.py` uses paho's deprecated callback API v1, which logs a warning.
 - The desktop client's saved-rooms file is obfuscated with a key built into the code, not protected (README notes it; an OS keyring is on the roadmap).
 - ZXing's scan screen opens in landscape (the library's default).
-- A room name from a key QR fills the form unchanged; `save_room` doesn't sanitize names, so a crafted name like `../x` could write outside `rooms/` if the user then taps Save Room. Key-only import itself refuses such names.
+- Upgrading from v1.0.0 loses the phone's saved rooms once (p4a's `files/app` wipe, see Persistence); later updates keep them. Say so in the next release notes.
 - "Clear Fields" in the desktop client resets the key to the placeholder passphrase `supersecretkey123`.

@@ -14,6 +14,7 @@ from datetime import datetime
 # AES-256-GCM message encryption (see chat_crypto.py / PROTOCOL.md)
 import chat_crypto
 import tls_config
+import room_store
 ENCRYPTION_AVAILABLE = chat_crypto.AVAILABLE
 if not ENCRYPTION_AVAILABLE:
     print("Warning: cryptography package not available. Install with: pip install cryptography")
@@ -54,6 +55,19 @@ class MQTTChatApp(App):
         self.screen_manager.add_widget(self.chat_screen)
         
         return self.screen_manager
+
+    def on_pause(self):
+        self._lock_saved_rooms()
+        return True  # keep running in the background (Kivy's default)
+
+    def on_stop(self):
+        self._lock_saved_rooms()
+
+    def _lock_saved_rooms(self):
+        """Forget the saved-rooms data key whenever the app leaves the foreground or closes"""
+        room_store.lock()
+        if room_store.encrypted() and getattr(self, 'connection_screen', None):
+            self.connection_screen._show_locked()
     
     def connect_to_mqtt(self, server, port, room, encryption_key, mqtt_username=None, mqtt_password=None,
                         tls=False, ca_pem=""):

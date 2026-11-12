@@ -13,23 +13,30 @@ from kivy.uix.popup import Popup
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.image import Image
 from kivy.clock import Clock
+from kivy.app import App
 from kivy.core.image import Image as CoreImage
 from kivy.utils import escape_markup
 import chat_crypto
 import qr_exchange
 import tls_config
 import android_qr
+import android_auth
+import room_store
 # Note: kivy.clipboard not available on Android
 
-ROOMS_DIR = "rooms"
 QR_TIMEOUT = 60  # seconds a key/room QR stays on screen
 QR_MAX_VERSION = 25  # larger QR codes may not scan reliably off a phone screen
-os.makedirs(ROOMS_DIR, exist_ok=True)
+LOCKED_TEXT = 'Locked - tap to unlock'  # saved-rooms spinner text until the user unlocks
 
 class ConnectionScreen(Screen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.main_app = None
+
+        # Saved rooms live in the app's data folder, which app updates leave alone
+        running = App.get_running_app()
+        room_store.init(running.user_data_dir if running else '.')
+        self._rooms_unlocked = not room_store.encrypted()
         
         # Create scrollable main layout for mobile
         scroll = ScrollView()
@@ -411,14 +418,16 @@ class ConnectionScreen(Screen):
         )
         layout.add_widget(saved_label)
         
+        # Encrypted (Android): nothing is listed until the user taps and unlocks
         self.room_spinner = Spinner(
-            text='Load Room',
-            values=self.get_saved_rooms(),
+            text=LOCKED_TEXT if room_store.encrypted() else 'Load Room',
+            values=[] if room_store.encrypted() else self.get_saved_rooms(),
             size_hint_y=None, 
             height='55dp',
             font_size='16sp'
         )
         self.room_spinner.bind(text=self.load_room)
+        self.room_spinner.bind(on_release=self._on_spinner_tap)
         layout.add_widget(self.room_spinner)
 
         # Spacer
@@ -836,19 +845,22 @@ class ConnectionScreen(Screen):
             self.show_popup("Room imported.\n\nEnter your name, then tap Connect.")
             return
         # Key-only: also update the saved room of that name, if there is one
-        file_path = os.path.join(ROOMS_DIR, f"{room}.json")
-        if os.path.basename(room) == room and os.path.exists(file_path):
-            try:
-                with open(file_path, 'r') as f:
-                    saved = json.load(f)
-                saved["key"] = data["key"]
-                with open(file_path, 'w') as f:
-                    json.dump(saved, f, indent=2)
+        key = data["key"]
+        def update_saved():
+            if room not in room_store.list_rooms():
+                return False
+            saved = room_store.load(room)
+            saved["key"] = key
+            room_store.save(room, saved)
+            return True
+        def done(updated):
+            if updated:
+                self._set_room_list()
                 self.show_popup(f"Key imported and saved room '{room}' updated.")
-            except Exception as e:
-                self.show_popup(f"Key imported, but saving room '{room}' failed: {e}")
-        else:
-            self.show_popup(f"Key imported for room '{room}'.")
+            else:
+                self.show_popup(f"Key imported for room '{room}'.")
+        self._with_store(update_saved, done, on_locked=lambda: self.show_popup(
+            f"Key imported for room '{room}'.\n\nSaved room not updated (locked)."))
 
     def _confirm(self, title, message, ok_text, on_ok):
         """Two-button confirmation popup; calls on_ok() if confirmed"""
@@ -924,34 +936,121 @@ Key: {self.key_input.text if self.key_input.text else 'None'}"""
         self.key_input.password = not value
 
     def get_saved_rooms(self):
-        """Get list of saved room configurations"""
+        """Saved room names (desktop; on Android the list needs an unlock first)"""
         try:
-            return [f[:-5] for f in os.listdir(ROOMS_DIR) if f.endswith('.json')]
-        except:
+            return room_store.list_rooms()
+        except room_store.RoomStoreError:
             return []
+
+    def _with_store(self, action, on_ok=None, on_locked=None, _retry=True):
+        """Run a saved-rooms action. If saved rooms are locked, prompt once and
+        retry. Never lets a storage error escape."""
+        try:
+            result = action()
+        except room_store.LockedError:
+            if not _retry:
+                self.show_popup("Could not unlock saved rooms.")
+                if on_locked:
+                    on_locked()
+                return
+            self._unlock(lambda: self._with_store(action, on_ok, on_locked, _retry=False),
+                         on_locked)
+            return
+        except room_store.InvalidatedError:
+            self._show_locked()
+            self._confirm(
+                "Saved rooms locked",
+                "Saved rooms can't be decrypted: the phone's screen lock was removed, "
+                "so Android deleted the key that protected them.\n\n"
+                "Clear them, then re-scan your Room QRs.",
+                "Clear saved rooms", self._clear_saved_rooms)
+            return
+        except room_store.RoomStoreError as e:
+            self.show_popup(str(e))  # fixed, non-secret messages only
+            return
+        except Exception as e:
+            print(f"Saved rooms error: {type(e).__name__}")  # never the message: it may hold data
+            self.show_popup("Saved rooms: unexpected error.")
+            return
+        if on_ok:
+            on_ok(result)
+
+    def _unlock(self, then, on_locked=None):
+        """One fingerprint/PIN prompt unwraps the saved-rooms data key for this
+        app session (the Keystore key needs a fresh prompt for every use)"""
+        def prompt():
+            cipher = room_store.begin_unlock()
+            def done(outcome):
+                if outcome == "ok":
+                    self._with_store(lambda: room_store.finish_unlock(cipher),
+                                     lambda _: then(), on_locked, _retry=False)
+                    return
+                if outcome == "error":
+                    self.show_popup("Could not show the unlock prompt.")
+                if on_locked:
+                    on_locked()
+            android_auth.authenticate(cipher, done)
+        self._with_store(prompt, None, on_locked, _retry=False)
+
+    def _set_room_list(self, rooms=None):
+        """Show saved rooms in the spinner (after an unlock or a change)"""
+        if rooms is None:
+            try:
+                rooms = room_store.list_rooms()  # in-memory once unlocked
+            except room_store.RoomStoreError:
+                return
+        self._rooms_unlocked = True
+        self.room_spinner.values = rooms
+        if self.room_spinner.text == LOCKED_TEXT:
+            self.room_spinner.text = 'Load Room'
+
+    def _show_locked(self):
+        """No rooms shown until the user unlocks"""
+        self._rooms_unlocked = False
+        self.room_spinner.values = []
+        self.room_spinner.text = LOCKED_TEXT
+
+    def _on_spinner_tap(self, spinner):
+        """While locked, a tap asks to unlock instead of opening the (empty) list"""
+        if self._rooms_unlocked:
+            return False
+        def unlocked(rooms):
+            self._set_room_list(rooms)
+            notes = room_store.notes()
+            if notes:
+                self.show_popup("\n".join(notes))
+            elif rooms:
+                Clock.schedule_once(lambda dt: setattr(spinner, 'is_open', True))
+        self._with_store(room_store.list_rooms, unlocked, on_locked=self._show_locked)
+        return True  # handlers bound later run first: this stops the Spinner's own toggle
+
+    def _clear_saved_rooms(self):
+        """After the key was invalidated: delete the undecryptable rooms and the key"""
+        try:
+            room_store.clear_all()
+        except Exception as e:
+            print(f"Clearing saved rooms failed: {type(e).__name__}")
+        self._set_room_list([])
+        self.room_spinner.text = 'Load Room'
+        self.show_popup("Saved rooms cleared.\n\nRe-scan your Room QRs to add them again.")
 
     def load_room(self, spinner, room_name):
         """Load a saved room configuration"""
-        if room_name == 'Load Room':
+        if room_name in ('Load Room', LOCKED_TEXT):
             return
-            
-        file_path = os.path.join(ROOMS_DIR, f"{room_name}.json")
-        try:
-            if os.path.exists(file_path):
-                with open(file_path, 'r') as f:
-                    data = json.load(f)
-                self.username_input.text = data.get("username", "User")
-                self.server_input.text = data.get("server", "localhost")
-                self.port_input.text = str(data.get("port", "1883"))
-                self.room_input.text = data.get("room", "general")
-                self.key_input.text = data.get("key", "")
-                self.mqtt_username_input.text = data.get("mqtt_username", "")
-                self.mqtt_password_input.text = data.get("mqtt_password", "")
-                self.tls_checkbox.active = bool(data.get("tls", False))
-                self.port_input.text = str(data.get("port", "1883"))  # toggle_tls may have changed it
-                self.ca_input.text = data.get("ca", "")
-        except Exception as e:
-            self.show_popup(f"Error loading room: {e}")
+
+        def fill(data):
+            self.username_input.text = data.get("username", "User")
+            self.server_input.text = data.get("server", "localhost")
+            self.port_input.text = str(data.get("port", "1883"))
+            self.room_input.text = data.get("room", "general")
+            self.key_input.text = data.get("key", "")
+            self.mqtt_username_input.text = data.get("mqtt_username", "")
+            self.mqtt_password_input.text = data.get("mqtt_password", "")
+            self.tls_checkbox.active = bool(data.get("tls", False))
+            self.port_input.text = str(data.get("port", "1883"))  # toggle_tls may have changed it
+            self.ca_input.text = data.get("ca", "")
+        self._with_store(lambda: room_store.load(room_name), fill, on_locked=self._show_locked)
 
     def save_room(self, instance):
         """Save current room configuration"""
@@ -973,20 +1072,19 @@ Key: {self.key_input.text if self.key_input.text else 'None'}"""
                 "ca": self.ca_input.text.strip()
             }
             
-            file_path = os.path.join(ROOMS_DIR, f"{name}.json")
-            with open(file_path, 'w') as f:
-                json.dump(data, f, indent=2)
-                
-            # Update spinner values
-            self.room_spinner.values = self.get_saved_rooms()
+        except ValueError:
+            self.show_popup("Port must be a valid number (1-65535)!")
+            return
+
+        def saved(_):
+            self._set_room_list()
             self.show_popup("Room configuration saved!")
-            
-        except Exception as e:
-            self.show_popup(f"Error saving room: {e}")
+        self._with_store(lambda: room_store.save(name, data), saved, on_locked=lambda: self.show_popup(
+            "Room not saved: saved rooms are locked."))
 
     def delete_room(self, instance):
         """Delete a saved room configuration with confirmation"""
-        if self.room_spinner.text == 'Load Room' or not self.room_spinner.text:
+        if self.room_spinner.text in ('Load Room', LOCKED_TEXT) or not self.room_spinner.text:
             self.show_popup("Please select a room to delete from the dropdown first!")
             return
         
@@ -1061,31 +1159,11 @@ Key: {self.key_input.text if self.key_input.text else 'None'}"""
 
     def perform_room_deletion(self, room_name):
         """Actually delete the room file and update UI"""
-        try:
-            file_path = os.path.join(ROOMS_DIR, f"{room_name}.json")
-            print(f"Attempting to delete: {file_path}")  # Debug print
-            
-            if os.path.exists(file_path):
-                os.remove(file_path)
-                print(f"Successfully deleted: {file_path}")  # Debug print
-                
-                # Update spinner values and reset to default
-                new_rooms = self.get_saved_rooms()
-                print(f"Remaining rooms: {new_rooms}")  # Debug print
-                
-                self.room_spinner.values = new_rooms
-                self.room_spinner.text = 'Load Room'
-                
-                self.show_popup(f"Room '{room_name}' has been deleted successfully!")
-            else:
-                print(f"File does not exist: {file_path}")  # Debug print
-                self.show_popup(f"Room file not found: {room_name}")
-                
-        except Exception as e:
-            print(f"Error deleting room: {e}")  # Debug print
-            import traceback
-            traceback.print_exc()  # Print full traceback for debugging
-            self.show_popup(f"Error deleting room: {e}")
+        def deleted(_):
+            self._set_room_list()
+            self.room_spinner.text = 'Load Room'
+            self.show_popup(f"Room '{room_name}' has been deleted successfully!")
+        self._with_store(lambda: room_store.delete(room_name), deleted, on_locked=self._show_locked)
 
     def show_popup(self, message):
         """Show info popup with better mobile sizing"""
