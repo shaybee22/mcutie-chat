@@ -8,3 +8,5 @@ McutieChat.spec
 # Android signing keys: never commit
 *.keystore
 *.jks
+# Python bytecode (e.g. from running the self-tests)
+__pycache__/
