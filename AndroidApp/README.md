@@ -3,7 +3,7 @@
 Welcome to the **Android Kivy version** of [Mcutie Chat](https://github.com/shaybee22/mcutie-chat/), a fully encrypted MQTT-based group chat app, optimized for mobile devices using **Kivy** and **Buildozer**.
 
 > ✅ **The desktop client and the Android app talk to each other.** Both speak Mcutie Chat protocol v1 ([AndroidApp/PROTOCOL.md](PROTOCOL.md)): AES-256-GCM messages, in-person Room/Key QR exchange, and optional TLS to the broker.
-> Clients from before protocol v1 (the old Fernet format) can't read v1 messages, so update every device in a room. **Latest release: [v1.0.0](https://github.com/shaybee22/mcutie-chat/releases/tag/v1.0.0)** (signed APK for arm64).
+> Clients from before protocol v1 (the old Fernet format) can't read v1 messages, so update every device in a room. **Latest release: [v1.1.0](https://github.com/shaybee22/mcutie-chat/releases/tag/v1.1.0)** (signed APK for arm64, Android 11+).
 
 ---
 
@@ -17,6 +17,7 @@ Welcome to the **Android Kivy version** of [Mcutie Chat](https://github.com/shay
 * 💬 Smooth chat interface with real-time updates
 * 📷 In-person QR exchange: **Key QR** (room key) and **Room QR** (full room setup, so a new user joins with one scan), with a read-aloud fingerprint; screenshots blocked while a QR is shown
 * 🔒 TLS to the broker, with a pinned CA certificate (self-signed brokers) or public CAs (e.g. Let's Encrypt)
+* 🔑 Saved rooms encrypted on the phone, unlocked with your fingerprint or screen-lock PIN once per app session, and kept across app updates (Android 11+)
 
 ---
 
@@ -90,6 +91,9 @@ AndroidApp/
 ├── qr_exchange.py          # Room/Key QR payloads
 ├── android_qr.py           # QR scanner (ZXing) + screenshot blocking
 ├── tls_config.py           # TLS trust rules
+├── room_store.py           # Saved rooms: encrypted storage, migration
+├── android_auth.py         # Fingerprint/PIN prompt for saved rooms
+├── src/                    # Java helper for the prompt callback
 ├── p4a-recipes/            # python-for-android recipe fix (cryptography)
 ├── tools/test_peer.py      # Headless test client
 └── PROTOCOL.md             # Wire format spec (messages, QR codes, TLS)
@@ -102,6 +106,7 @@ AndroidApp/
 * Messages use **AES-256-GCM** with a random nonce per message, bound to the room's topic
 * Room keys are either generated (random 256-bit) or derived from a passphrase with **scrypt** (room-specific salt)
 * Messages are encrypted client-side before sending; the broker only sees ciphertext
+* Saved rooms (room keys, broker passwords) are encrypted on the phone with a random key that is itself locked by a non-exportable Android Keystore key. Opening them needs a fresh fingerprint or screen-lock PIN each app session; unlocking the phone isn't enough
 * Full specification: [PROTOCOL.md](PROTOCOL.md)
 
 ---

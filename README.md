@@ -9,7 +9,7 @@ There are two clients, and they talk to each other:
 - **Android app** (Kivy), with a camera QR scanner;
 - **Desktop client** (Python/Tkinter) for Windows and Linux.
 
-**Latest release: [v1.0.0](https://github.com/shaybee22/mcutie-chat/releases/tag/v1.0.0)**
+**Latest release: [v1.1.0](https://github.com/shaybee22/mcutie-chat/releases/tag/v1.1.0)**
 
 ---
 
@@ -17,11 +17,11 @@ There are two clients, and they talk to each other:
 
 | Platform | File | Notes |
 |---|---|---|
-| Android (64-bit ARM) | [mcutiechat-1.0.0-arm64-v8a-release.apk](https://github.com/shaybee22/mcutie-chat/releases/download/v1.0.0/mcutiechat-1.0.0-arm64-v8a-release.apk) | Allow installs from unknown sources. If you had a test build installed before, uninstall it first: the signing key is different. Uninstalling deletes that build's saved rooms. |
-| Windows (64-bit) | [McutieChat-1.0.0-windows-x64.exe](https://github.com/shaybee22/mcutie-chat/releases/download/v1.0.0/McutieChat-1.0.0-windows-x64.exe) | Portable: nothing to install, and no Python needed. It's unsigned, so SmartScreen may warn you ("More info → Run anyway"). |
+| Android 11+ (64-bit ARM) | [mcutiechat-1.1.0-arm64-v8a-release.apk](https://github.com/shaybee22/mcutie-chat/releases/download/v1.1.0/mcutiechat-1.1.0-arm64-v8a-release.apk) | Needs Android 11 or later. Allow installs from unknown sources. **Updating from v1.0.0:** your saved rooms are lost once, so have your Room QRs ready to re-scan; later updates keep them. If you had a test build installed before, uninstall it first: the signing key is different. Uninstalling deletes that build's saved rooms. |
+| Windows (64-bit) | [McutieChat-1.1.0-windows-x64.exe](https://github.com/shaybee22/mcutie-chat/releases/download/v1.1.0/McutieChat-1.1.0-windows-x64.exe) | Portable: nothing to install, and no Python needed. It's unsigned, so SmartScreen may warn you ("More info → Run anyway"). **Updating from v1.0.0:** your saved rooms are converted to the new encrypted format the first time it starts; nothing to re-enter. |
 | Linux | [run from source](#-running-from-source-linux) | Or build a single-file binary: see [Linux/README.md](Linux/README.md). |
 
-Checksums are in [`SHA256SUMS.txt`](https://github.com/shaybee22/mcutie-chat/releases/download/v1.0.0/SHA256SUMS.txt) on the release page.
+Checksums are in [`SHA256SUMS.txt`](https://github.com/shaybee22/mcutie-chat/releases/download/v1.1.0/SHA256SUMS.txt) on the release page.
 
 You'll also need a broker. You can [host your own](#-hosting-your-own-broker) or use any MQTT broker you have access to.
 
@@ -137,6 +137,7 @@ Details, all the options and troubleshooting: [BROKER-SETUP.md](BROKER-SETUP.md)
 - Clients from before protocol v1 (the old Fernet-based MQTT Chat) can't talk to v1. Update every device in a room.
 - The desktop client's saved-rooms file only opens for the same user on the same computer, because its key lives in that user's keyring. To move rooms to another computer, use **Export All** and **Import**.
 - The Android QR scanner opens in landscape.
+- Android saved rooms from v1.0.0 can't be carried over to v1.1.0 (the old version kept them where Android updates delete them). Re-scan your Room QRs after updating.
 
 ---
 
@@ -144,7 +145,8 @@ Details, all the options and troubleshooting: [BROKER-SETUP.md](BROKER-SETUP.md)
 
 * [x] Protocol v1 on desktop and Android (AES-256-GCM, QR exchange, TLS)
 * [x] First release (v1.0.0)
-* [x] Protect the desktop saved-rooms file properly (OS keyring)
+* [x] Android saved rooms encrypted, unlocked with fingerprint or PIN, and kept across updates (v1.1.0)
+* [x] Protect the desktop saved-rooms file properly (OS keyring) (v1.1.0)
 * [ ] File/image sharing
 * [ ] Push notifications
 * [ ] Android/Desktop cross-device syncing
