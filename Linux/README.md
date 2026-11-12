@@ -16,8 +16,9 @@ Mcutie Chat (formerly MQChat) is a cross-platform, end-to-end encrypted group ch
 * 📷 Show a Room/Key QR for phones to scan, and import one by pasting its text
 * 🔒 Optional TLS to the broker (pinned CA or public CAs)
 * 🧵 Real-time group chat via MQTT broker
-* 💾 Saved room configs with encryption
-* 📥 Import/export rooms
+* 💾 Saved rooms encrypted with a key in the system keyring (Secret Service), or a passphrase if there's none
+* 📥 Import/export rooms (exports are passphrase-encrypted)
+* 🎨 Each user's messages in their own color
 * 👥 Online presence tracking
 * ✅ Anonymous or authenticated MQTT login
 
@@ -27,7 +28,7 @@ Mcutie Chat (formerly MQChat) is a cross-platform, end-to-end encrypted group ch
 
 * Python 3 with Tk (`sudo apt install python3-tk` on Debian/Ubuntu)
 * pip
-* The packages `paho-mqtt cryptography qrcode pillow certifi` (the build script installs them, plus PyInstaller)
+* The packages `paho-mqtt cryptography qrcode pillow certifi keyring` (the build script installs them, plus PyInstaller)
 
 The desktop client is a single file, `mqchat.py` at the repo root, shared by Windows and Linux. Its protocol code (encryption, QR codes, TLS) comes from `AndroidApp/`, the same code the Android app uses.
 
@@ -56,8 +57,8 @@ Once complete, you’ll have a single binary file named `McutieChat` that can be
 
 ```bash
 cd Linux
-pip3 install pyinstaller paho-mqtt cryptography qrcode pillow certifi
-pyinstaller --onefile --windowed --name="McutieChat" --paths ../AndroidApp --add-data "../mcutie-icon.png:." --distpath="./portable" ../mqchat.py
+pip3 install pyinstaller paho-mqtt cryptography qrcode pillow certifi keyring
+pyinstaller --onefile --windowed --name="McutieChat" --paths ../AndroidApp --hidden-import keyring.backends.SecretService --copy-metadata keyring --add-data "../mcutie-icon.png:." --distpath="./portable" ../mqchat.py
 ```
 
 ---

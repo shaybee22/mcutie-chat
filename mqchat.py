@@ -10,6 +10,7 @@ exchange, optional TLS. The protocol code is shared with the Android app (Androi
 
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext, simpledialog
+import tkinter.font as tkfont
 import paho.mqtt.client as mqtt
 import json
 import base64
@@ -20,7 +21,6 @@ import os
 import sys
 import secrets
 from datetime import datetime
-from cryptography.fernet import Fernet  # only for the saved-rooms file (legacy format)
 
 # Protocol code shared with the Android app: one copy, so the clients can't drift apart.
 # (A PyInstaller build bundles these modules via --paths AndroidApp.)
@@ -33,6 +33,355 @@ import tls_config  # noqa: E402
 
 QR_TIMEOUT = 60       # seconds a key/room QR stays on screen
 QR_MAX_VERSION = 25   # larger QR codes may not scan reliably off a screen
+
+# ---- Chat colors: each username hashes to a fixed palette entry (stable across sessions).
+# All colors have at least 4.5:1 contrast on CHAT_BG (checked by --self-test).
+CHAT_BG = "#FFFFFF"
+MY_COLOR = "#1565C0"        # our own messages: always this blue, which isn't in USER_COLORS
+SYSTEM_COLOR = "#6B6B6B"    # system messages: grey italic
+USER_COLORS = ("#C62828", "#AD1457", "#6A1B9A", "#00838F", "#2E7D32",
+               "#827717", "#BF360C", "#5D4037", "#455A64", "#9A5B00")
+
+
+def user_color_index(name):
+    """Index into USER_COLORS for a username (sha256, so the same in every session)."""
+    digest = hashlib.sha256(name.encode("utf-8")).digest()
+    return int.from_bytes(digest[:4], "big") % len(USER_COLORS)
+
+
+# ---- Saved rooms (mqtt_chat_rooms.json) and Export All files.
+# Saved rooms: AES-256-GCM with a random 256-bit data key kept in the OS keyring (Windows
+# Credential Manager / Secret Service). With no usable keyring: a key derived (scrypt) from a
+# passphrase asked once per session. Exports: always a passphrase chosen at export time.
+# Both files are JSON: header fields + "nonce" + "ct" (base64); the header is the GCM AAD.
+ROOMS_FORMAT = "mcutie-rooms"
+ROOMS_VERSION = 2               # version 1 was the fixed-key Fernet file (obfuscation only)
+EXPORT_FORMAT = "mcutie-rooms-export"
+EXPORT_VERSION = 1
+KEYRING_SERVICE = "Mcutie Chat"
+KEYRING_ENTRY = "saved-rooms-data-key"
+PASS_SCRYPT_N = 2 ** 17         # stronger than the chat's 2**15: these files can be attacked offline
+PASS_SCRYPT_R = 8
+PASS_SCRYPT_P = 1
+SALT_SIZE = 16
+MIN_PASSPHRASE = 8
+
+
+class RoomsFileError(Exception):
+    """A saved-rooms or export file problem; the message is shown to the user."""
+
+
+def _legacy_fernet():
+    from cryptography.fernet import Fernet
+    # The old fixed key built into the code: only read, to migrate old files
+    return Fernet(base64.urlsafe_b64encode(hashlib.sha256(b"mqtt_chat_config_key_v1").digest()))
+
+
+def _check_rooms(rooms):
+    if not isinstance(rooms, dict) or not all(
+            isinstance(k, str) and isinstance(v, dict) for k, v in rooms.items()):
+        raise RoomsFileError("The file doesn't contain a list of rooms.")
+    return rooms
+
+
+def _aad(header):
+    return json.dumps(header, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _passphrase_header(fmt, version, salt=None):
+    return {"format": fmt, "version": version, "kdf": "scrypt",
+            "salt": base64.b64encode(salt or os.urandom(SALT_SIZE)).decode(),
+            "n": PASS_SCRYPT_N, "r": PASS_SCRYPT_R, "p": PASS_SCRYPT_P}
+
+
+def _passphrase_key(passphrase, header):
+    try:
+        salt = base64.b64decode(header["salt"], validate=True)
+        n, r, p = int(header["n"]), int(header["r"]), int(header["p"])
+    except (KeyError, TypeError, ValueError):
+        raise RoomsFileError("The file's passphrase settings are damaged.")
+    if not (2 ** 14 <= n <= 2 ** 20 and 1 <= r <= 16 and 1 <= p <= 4 and len(salt) >= 16):
+        raise RoomsFileError("The file's passphrase settings are not supported.")
+    kdf = chat_crypto.Scrypt(salt=salt, length=chat_crypto.KEY_SIZE, n=n, r=r, p=p)
+    return kdf.derive(passphrase.encode("utf-8"))
+
+
+def _seal_rooms(key, header, rooms):
+    nonce = os.urandom(chat_crypto.NONCE_SIZE)
+    ct = chat_crypto.AESGCM(key).encrypt(nonce, json.dumps(rooms).encode("utf-8"), _aad(header))
+    return json.dumps(dict(header, nonce=base64.b64encode(nonce).decode(),
+                           ct=base64.b64encode(ct).decode()), indent=1).encode("utf-8")
+
+
+def _split_envelope(env):
+    """Return (header, nonce, ct) of a parsed file, or raise RoomsFileError."""
+    header = {k: v for k, v in env.items() if k not in ("nonce", "ct")}
+    try:
+        nonce = base64.b64decode(env["nonce"], validate=True)
+        ct = base64.b64decode(env["ct"], validate=True)
+    except (KeyError, TypeError, ValueError):
+        raise RoomsFileError("The file is damaged.")
+    if len(nonce) != chat_crypto.NONCE_SIZE:
+        raise RoomsFileError("The file is damaged.")
+    return header, nonce, ct
+
+
+def _open_rooms(key, env):
+    """Decrypt a parsed file; raises cryptography's InvalidTag for a wrong key or tampering."""
+    header, nonce, ct = _split_envelope(env)
+    plain = chat_crypto.AESGCM(key).decrypt(nonce, ct, _aad(header))
+    return _check_rooms(json.loads(plain.decode("utf-8")))
+
+
+def _write_private(path, data):
+    """Write atomically, readable only by this user on Linux/macOS (no plaintext ever lands here)."""
+    tmp = path + ".tmp"
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0), 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except OSError as e:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise RoomsFileError(f"Could not write {path}: {e}")
+
+
+def _wrong_passphrase(ask, prompt, attempt):
+    """Ask for a passphrase, telling the user when the previous one was wrong."""
+    return ask(("Wrong passphrase, try again.\n\n" if attempt else "") + prompt, False)
+
+
+def export_rooms_data(rooms, passphrase):
+    """Encrypted Export All file contents (bytes)."""
+    header = _passphrase_header(EXPORT_FORMAT, EXPORT_VERSION)
+    return _seal_rooms(_passphrase_key(passphrase, header), header, _check_rooms(rooms))
+
+
+def import_rooms_data(data, ask):
+    """Parse an Export All file. Returns (rooms, was_plaintext), or (None, False) if cancelled.
+
+    ask(prompt, confirm) -> passphrase or None. Plaintext exports (older versions) are
+    returned with was_plaintext=True so the caller can warn before importing them.
+    """
+    try:
+        env = json.loads(data.decode("utf-8-sig"))
+    except (UnicodeDecodeError, ValueError):
+        raise RoomsFileError("This isn't a Mcutie Chat rooms export.")
+    if not (isinstance(env, dict) and env.get("format") == EXPORT_FORMAT):
+        if isinstance(env, dict) and env.get("format") == ROOMS_FORMAT:
+            raise RoomsFileError("This is a saved-rooms file, not an export. Use Export All to make one.")
+        return _check_rooms(env), True
+    if env.get("version") != EXPORT_VERSION or env.get("kdf") != "scrypt":
+        raise RoomsFileError("This export was made by a newer version of Mcutie Chat.")
+    from cryptography.exceptions import InvalidTag
+    attempt = 0
+    while True:
+        passphrase = _wrong_passphrase(ask, "Enter the passphrase this export was protected with:", attempt)
+        if passphrase is None:
+            return None, False
+        try:
+            return _open_rooms(_passphrase_key(passphrase, env), env), False
+        except InvalidTag:
+            attempt += 1
+
+
+def _system_keyring():
+    """The keyring module if a real backend is usable here, else None."""
+    try:
+        import keyring
+        backend = keyring.get_keyring()
+    except Exception:
+        return None
+    if type(backend).__module__ in ("keyring.backends.fail", "keyring.backends.null"):
+        return None
+    return keyring
+
+
+class RoomVault:
+    """Reads and writes the encrypted saved-rooms file.
+
+    It never writes rooms in plaintext, and never overwrites a file it couldn't open ("locked").
+    ask(prompt, confirm) -> passphrase or None (cancel); confirm=True means choose a new one.
+    """
+
+    def __init__(self, path, keyring_module="system"):
+        self.path = path
+        self.keyring = _system_keyring() if keyring_module == "system" else keyring_module
+        self.mode = "keyring" if self.keyring else "passphrase"
+        self.key = None
+        self.header = None        # header of the file being written (holds the passphrase salt)
+        self.locked = None        # reason the existing file couldn't be opened, or None
+        self.locked_env = None    # its parsed contents, if a passphrase could still unlock it
+        self.legacy_pending = False  # rooms came from an old-format file not yet rewritten
+
+    # -- keyring
+    def _keyring_key(self, create):
+        """The data key from the keyring (made on first use if create). None if unavailable/absent."""
+        if not self.keyring:
+            return None
+        try:
+            stored = self.keyring.get_password(KEYRING_SERVICE, KEYRING_ENTRY)
+            if stored is None and create:
+                self.keyring.set_password(KEYRING_SERVICE, KEYRING_ENTRY, chat_crypto.generate_key())
+                stored = self.keyring.get_password(KEYRING_SERVICE, KEYRING_ENTRY)  # verify it stuck
+        except Exception as e:
+            print(f"Keyring unavailable: {e}")
+            return None
+        if stored is None:
+            return None
+        key = chat_crypto.parse_raw_key(stored)
+        if key is None:
+            raise RoomsFileError("The saved-rooms key in the system keyring is damaged.")
+        return key
+
+    def _use_keyring(self):
+        """Switch to a keyring data key; False (passphrase mode) if there's no usable keyring."""
+        key = self._keyring_key(create=True)
+        if key is None:
+            self.mode = "passphrase"
+            return False
+        self.mode, self.key = "keyring", key
+        self.header = {"format": ROOMS_FORMAT, "version": ROOMS_VERSION, "kdf": "keyring"}
+        return True
+
+    # -- reading
+    def _read(self):
+        """('missing'|'legacy'|'v2', rooms or parsed file)."""
+        try:
+            with open(self.path, "rb") as f:
+                data = f.read()
+        except FileNotFoundError:
+            return "missing", None
+        except OSError as e:
+            raise RoomsFileError(f"Could not read {self.path}: {e}")
+        try:
+            env = json.loads(data.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            env = None
+        if isinstance(env, dict) and env.get("format") == ROOMS_FORMAT:
+            if env.get("version") != ROOMS_VERSION or env.get("kdf") not in ("keyring", "scrypt"):
+                raise RoomsFileError("The saved-rooms file was made by a newer version of Mcutie Chat.")
+            return "v2", env
+        try:
+            plain = _legacy_fernet().decrypt(data.strip())
+        except Exception:
+            raise RoomsFileError("The saved-rooms file isn't in a format this version recognises.")
+        return "legacy", _check_rooms(json.loads(plain.decode("utf-8")))
+
+    def _unlock_passphrase(self, env, ask):
+        """Ask until the passphrase opens env. Returns rooms, or None if cancelled."""
+        from cryptography.exceptions import InvalidTag
+        attempt = 0
+        while True:
+            passphrase = _wrong_passphrase(
+                ask, "Saved rooms are protected with a passphrase (no system keyring).\n"
+                     "Enter it to unlock them for this session:", attempt)
+            if passphrase is None:
+                return None
+            key = _passphrase_key(passphrase, env)
+            try:
+                rooms = _open_rooms(key, env)
+            except InvalidTag:
+                attempt += 1
+                continue
+            self.mode, self.key = "passphrase", key
+            self.header = {k: env[k] for k in _passphrase_header(ROOMS_FORMAT, ROOMS_VERSION)}
+            return rooms
+
+    def load(self, ask):
+        """Rooms from the file ({} if none). Migrates an old-format file, and a passphrase file
+        once a keyring is available. Raises RoomsFileError, and the vault is then locked."""
+        self.locked = self.locked_env = None
+        try:
+            return self._load(ask)
+        except Exception as e:
+            if not self.locked:
+                self.locked = str(e) if isinstance(e, RoomsFileError) else f"Unexpected error: {e}"
+            raise RoomsFileError(self.locked) from e
+
+    def _rewrite(self, rooms, ask):
+        """Rewrite in the current format; on failure the old file stays and rooms stay in memory."""
+        try:
+            self.save(rooms, ask)
+        except RoomsFileError as e:
+            print(f"Saved rooms not rewritten yet: {e}")
+
+    def _load(self, ask):
+        from cryptography.exceptions import InvalidTag
+        kind, content = self._read()
+        if kind == "missing":
+            return {}
+        if kind == "legacy":
+            self.legacy_pending = True
+            self._rewrite(content, ask)   # replaces the old-format file with the new format
+            return content
+        if content["kdf"] == "keyring":
+            key = self._keyring_key(create=False)
+            if key is None:
+                self.locked = ("They're encrypted with a key in the system keyring, which isn't "
+                               "available (a different user, computer or keyring?).")
+                raise RoomsFileError(self.locked)
+            try:
+                rooms = _open_rooms(key, content)
+            except InvalidTag:
+                self.locked = "The keyring's key doesn't open them (the file was changed or the key replaced)."
+                raise RoomsFileError(self.locked)
+            self._use_keyring()
+            return rooms
+        rooms = self._unlock_passphrase(content, ask)
+        if rooms is None:
+            self.locked, self.locked_env = "No passphrase entered.", content
+            return {}
+        if self.keyring and self._use_keyring():
+            self._rewrite(rooms, ask)  # a keyring is available now: move off the passphrase
+        return rooms
+
+    # -- writing
+    def save(self, rooms, ask):
+        """Encrypt and write rooms; returns the rooms written (a still-locked file's rooms are
+        merged in once unlocked). Raises RoomsFileError, writing nothing, if there's no key."""
+        _check_rooms(rooms)
+        if self.locked:
+            if self.locked_env is None:
+                raise RoomsFileError(f"The saved-rooms file couldn't be opened, so it was left untouched. "
+                                     f"{self.locked}")
+            existing = self._unlock_passphrase(self.locked_env, ask)
+            if existing is None:
+                raise RoomsFileError("The saved rooms are still locked (no passphrase entered), "
+                                     "so the file was left untouched.")
+            self.locked = self.locked_env = None
+            rooms = {**existing, **rooms}
+            if self.keyring:
+                self._use_keyring()
+        if self.key is None and not (self.mode == "keyring" and self._use_keyring()):
+            passphrase = ask("No system keyring is available, so saved rooms are protected with a "
+                             "passphrase.\nChoose one (you'll enter it each time you start Mcutie Chat):",
+                             True)
+            if passphrase is None:
+                raise RoomsFileError("No passphrase chosen, so nothing was written.")
+            self.header = _passphrase_header(ROOMS_FORMAT, ROOMS_VERSION)
+            self.mode, self.key = "passphrase", _passphrase_key(passphrase, self.header)
+        _write_private(self.path, _seal_rooms(self.key, self.header, rooms))
+        self.legacy_pending = False
+        return rooms
+
+    def describe(self):
+        """One line for the Saved Rooms tab."""
+        if self.locked:
+            return f"⛔ Saved rooms are locked and the file is left untouched. {self.locked}"
+        if self.legacy_pending:
+            return ("⚠️ Saved rooms are still in the old, obfuscated-only format: "
+                    "save a room to encrypt them properly.")
+        if self.mode == "keyring":
+            where = "Windows Credential Manager" if os.name == "nt" else "the system keyring"
+            return f"🔒 Saved rooms are encrypted (AES-256-GCM) with a key kept in {where}."
+        return ("⚠️ No system keyring found: saved rooms are encrypted with a passphrase "
+                "you enter each session.")
 
 class SecureMQTTChat:
     def _set_window_icon(self):
@@ -74,7 +423,7 @@ class SecureMQTTChat:
         
         # Room management
         self.config_file = "mqtt_chat_rooms.json"
-        self.config_cipher = None
+        self.room_vault = RoomVault(self.config_file)
         self.saved_rooms = {}
         
         self.setup_gui()
@@ -331,8 +680,16 @@ class SecureMQTTChat:
         
         # Chat messages area
         self.chat_display = scrolledtext.ScrolledText(chat_display_frame, state=tk.DISABLED, 
-                                                     wrap=tk.WORD, height=20)
+                                                     wrap=tk.WORD, height=20, background=CHAT_BG)
         self.chat_display.pack(fill=tk.BOTH, expand=True, pady=5)
+
+        # Line colors: one per palette entry (usernames hash into it), ours, and grey italic system lines
+        for i, color in enumerate(USER_COLORS):
+            self.chat_display.tag_configure(f"user{i}", foreground=color)
+        self.chat_display.tag_configure("mine", foreground=MY_COLOR)
+        self._system_font = tkfont.Font(font=self.chat_display.cget("font"))
+        self._system_font.configure(slant="italic")
+        self.chat_display.tag_configure("system", foreground=SYSTEM_COLOR, font=self._system_font)
         
         # Message input frame
         input_frame = tk.Frame(chat_display_frame)
@@ -368,8 +725,13 @@ class SecureMQTTChat:
         """Setup the room management tab"""
         title_label = tk.Label(self.rooms_frame, text="Saved Chat Rooms", 
                               font=("Arial", 16, "bold"))
-        title_label.pack(pady=20)
-        
+        title_label.pack(pady=(20, 5))
+
+        # How the saved-rooms file is protected (keyring, passphrase, or locked)
+        self.rooms_status_label = tk.Label(self.rooms_frame, text="", font=("Arial", 9),
+                                           wraplength=800, justify=tk.LEFT)
+        self.rooms_status_label.pack(padx=20, pady=(0, 10))
+
         # Main container
         main_container = tk.Frame(self.rooms_frame)
         main_container.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
@@ -432,15 +794,6 @@ class SecureMQTTChat:
                              command=self.import_rooms, bg="#607D8B", fg="white")
         import_btn.pack(side=tk.LEFT)
         
-    def get_config_cipher(self):
-        """Get or create cipher for config file encryption"""
-        if not self.config_cipher:
-            # Fixed key built into the code, kept so existing saved-rooms files still load.
-            # This is obfuscation, not protection (anyone with the source can derive it).
-            config_key = base64.urlsafe_b64encode(hashlib.sha256(b"mqtt_chat_config_key_v1").digest())
-            self.config_cipher = Fernet(config_key)
-        return self.config_cipher
-        
     def save_current_room(self):
         """Save current room configuration"""
         server = self.server_entry.get().strip()
@@ -477,9 +830,10 @@ class SecureMQTTChat:
             "saved_date": datetime.now().isoformat()
         }
         
-        self.save_rooms_to_file()
+        saved = self.save_rooms_to_file()
         self.refresh_rooms_display()
-        messagebox.showinfo("Saved", f"Room '{room_name}' saved successfully!")
+        if saved:
+            messagebox.showinfo("Saved", f"Room '{room_name}' saved successfully!")
         
     def load_room_config(self, event=None):
         """Load selected room configuration"""
@@ -695,8 +1049,26 @@ class SecureMQTTChat:
             self.refresh_rooms_display()
             messagebox.showinfo("Deleted", f"Room '{room_name}' deleted successfully!")
             
+    def _ask_passphrase(self, prompt, confirm=False):
+        """Passphrase dialog; confirm=True means choosing a new one (asked twice). None if cancelled."""
+        while True:
+            passphrase = simpledialog.askstring("Passphrase", prompt, show="*", parent=self.root)
+            if passphrase is None or not confirm:
+                return passphrase
+            if len(passphrase) < MIN_PASSPHRASE:
+                messagebox.showerror("Passphrase", f"Use at least {MIN_PASSPHRASE} characters.",
+                                     parent=self.root)
+                continue
+            again = simpledialog.askstring("Passphrase", "Enter the same passphrase again:",
+                                           show="*", parent=self.root)
+            if again is None:
+                return None
+            if again == passphrase:
+                return passphrase
+            messagebox.showerror("Passphrase", "The passphrases didn't match.", parent=self.root)
+
     def export_rooms(self):
-        """Export all rooms to a file"""
+        """Export all rooms to a file, encrypted with a passphrase chosen now"""
         if not self.saved_rooms:
             messagebox.showwarning("No Rooms", "No rooms to export")
             return
@@ -709,10 +1081,14 @@ class SecureMQTTChat:
         )
         
         if filename:
+            passphrase = self._ask_passphrase(
+                "Choose a passphrase to protect this export.\n"
+                "You'll need it to import the rooms again:", confirm=True)
+            if passphrase is None:
+                return
             try:
-                with open(filename, 'w') as f:
-                    json.dump(self.saved_rooms, f, indent=2)
-                messagebox.showinfo("Exported", f"Rooms exported to {filename}")
+                _write_private(filename, export_rooms_data(self.saved_rooms, passphrase))
+                messagebox.showinfo("Exported", f"Rooms exported (encrypted) to {filename}")
             except Exception as e:
                 messagebox.showerror("Export Error", f"Failed to export: {str(e)}")
                 
@@ -726,8 +1102,17 @@ class SecureMQTTChat:
         
         if filename:
             try:
-                with open(filename, 'r') as f:
-                    imported_rooms = json.load(f)
+                with open(filename, 'rb') as f:
+                    imported_rooms, was_plaintext = import_rooms_data(f.read(), self._ask_passphrase)
+                if imported_rooms is None:
+                    return
+                if was_plaintext and not messagebox.askyesno(
+                        "Unencrypted Export",
+                        "This export is NOT encrypted (made by an older version of Mcutie Chat): "
+                        "anyone who can read the file can see its room keys and broker passwords.\n\n"
+                        "Import it anyway? Afterwards, delete the file or replace it with a new "
+                        "Export All, which is encrypted.", icon=messagebox.WARNING):
+                    return
                 
                 # Merge with existing rooms
                 conflicts = []
@@ -741,45 +1126,35 @@ class SecureMQTTChat:
                         return
                 
                 self.saved_rooms.update(imported_rooms)
-                self.save_rooms_to_file()
+                saved = self.save_rooms_to_file()
                 self.refresh_rooms_display()
-                messagebox.showinfo("Imported", f"Successfully imported {len(imported_rooms)} room(s)")
+                if saved:
+                    messagebox.showinfo("Imported", f"Successfully imported {len(imported_rooms)} room(s)")
                 
             except Exception as e:
                 messagebox.showerror("Import Error", f"Failed to import: {str(e)}")
                 
     def save_rooms_to_file(self):
-        """Save rooms to encrypted file"""
+        """Save rooms to the encrypted file; True if written"""
         try:
-            cipher = self.get_config_cipher()
-            data = json.dumps(self.saved_rooms).encode()
-            encrypted_data = cipher.encrypt(data)
-            
-            with open(self.config_file, 'wb') as f:
-                f.write(encrypted_data)
-                
+            self.saved_rooms = self.room_vault.save(self.saved_rooms, self._ask_passphrase)
+            return True
         except Exception as e:
-            messagebox.showerror("Save Error", f"Failed to save rooms: {str(e)}")
+            messagebox.showerror("Save Error", f"Rooms were not saved to disk: {str(e)}")
+            return False
+        finally:
+            self.rooms_status_label.config(text=self.room_vault.describe())
             
     def load_saved_rooms(self):
-        """Load rooms from encrypted file"""
-        if not os.path.exists(self.config_file):
-            return
-            
+        """Load rooms from the encrypted file (migrating an old-format file)"""
         try:
-            cipher = self.get_config_cipher()
-            
-            with open(self.config_file, 'rb') as f:
-                encrypted_data = f.read()
-                
-            decrypted_data = cipher.decrypt(encrypted_data)
-            self.saved_rooms = json.loads(decrypted_data.decode())
-            self.refresh_rooms_display()
-            
+            self.saved_rooms = self.room_vault.load(self._ask_passphrase)
         except Exception as e:
             print(f"Failed to load saved rooms: {e}")
-            # If loading fails, start with empty rooms
             self.saved_rooms = {}
+            messagebox.showwarning("Saved Rooms", f"Saved rooms could not be opened: {e}")
+        self.refresh_rooms_display()
+        self.rooms_status_label.config(text=self.room_vault.describe())
             
     def refresh_rooms_display(self):
         """Refresh the rooms display in both dropdown and listbox"""
@@ -1383,7 +1758,8 @@ class SecureMQTTChat:
         time_str = datetime.fromtimestamp(timestamp).strftime("%H:%M:%S")
         
         self.chat_display.config(state=tk.NORMAL)
-        self.chat_display.insert(tk.END, f"[{time_str}] {username}: {message}\n")
+        tag = "mine" if username == self.username else f"user{user_color_index(username)}"
+        self.chat_display.insert(tk.END, f"[{time_str}] {username}: {message}\n", tag)
         self.chat_display.config(state=tk.DISABLED)
         self.chat_display.see(tk.END)
         
@@ -1392,7 +1768,7 @@ class SecureMQTTChat:
         time_str = datetime.now().strftime("%H:%M:%S")
         
         self.chat_display.config(state=tk.NORMAL)
-        self.chat_display.insert(tk.END, f"[{time_str}] *** {message} ***\n")
+        self.chat_display.insert(tk.END, f"[{time_str}] *** {message} ***\n", "system")
         self.chat_display.config(state=tk.DISABLED)
         self.chat_display.see(tk.END)
         
@@ -1436,17 +1812,232 @@ class SecureMQTTChat:
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.root.mainloop()
 
+def _self_test():
+    """python mqchat.py --self-test: saved-rooms storage, exports and chat colors (no GUI, no real
+    keyring: an in-memory one stands in; files go to a temporary folder)."""
+    import tempfile
+
+    class MemKeyring:
+        def __init__(self):
+            self.store = {}
+        def get_password(self, service, user):
+            return self.store.get((service, user))
+        def set_password(self, service, user, password):
+            self.store[(service, user)] = password
+
+    class NullKeyring:  # accepts writes but keeps nothing, like keyring's null backend
+        def get_password(self, service, user):
+            return None
+        def set_password(self, service, user, password):
+            pass
+
+    def answers(*replies):
+        """A fake passphrase dialog: returns replies in order, records the prompts it got."""
+        queue = list(replies)
+        def ask(prompt, confirm):
+            ask.prompts.append((prompt, confirm))
+            assert queue, f"unexpected passphrase prompt: {prompt!r}"
+            return queue.pop(0)
+        ask.prompts = []
+        return ask
+
+    def never(prompt, confirm):
+        raise AssertionError(f"unexpected passphrase prompt: {prompt!r}")
+
+    def raw(path):
+        with open(path, "rb") as f:
+            return f.read()
+
+    def raises(fn, exc=RoomsFileError):
+        try:
+            fn()
+        except exc:
+            return
+        raise AssertionError(f"{fn} did not raise {exc.__name__}")
+
+    rooms = {
+        "Home": {"server": "broker.example", "port": "8883", "channel": "general", "username": "me",
+                 "encryption_key": chat_crypto.generate_key(), "mqtt_username": "u",
+                 "mqtt_password": "secret-pw", "tls": True, "ca": "", "saved_date": "2026-01-01T00:00:00"},
+        "Work ☕": {"server": "10.0.0.2", "port": "1883", "channel": "team", "username": "me",
+                   "encryption_key": "a passphrase key", "tls": False, "ca": ""},
+    }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "mqtt_chat_rooms.json")
+
+        def write_legacy(data):
+            with open(path, "wb") as f:
+                f.write(_legacy_fernet().encrypt(json.dumps(data).encode()))
+
+        def check_not_plaintext():
+            data = raw(path)
+            for secret in (b"secret-pw", rooms["Home"]["encryption_key"].encode(), b"broker.example"):
+                assert secret not in data, "secret in plaintext on disk"
+            raises(lambda: _legacy_fernet().decrypt(data), Exception)  # old format is gone
+            assert not os.path.exists(path + ".tmp")
+
+        # 1. Old fixed-key Fernet file migrates silently to keyring AES-GCM, rooms intact
+        write_legacy(rooms)
+        kr = MemKeyring()
+        vault = RoomVault(path, kr)
+        assert vault.load(never) == rooms
+        assert vault.mode == "keyring" and not vault.legacy_pending and not vault.locked
+        env = json.loads(raw(path))
+        assert (env["format"], env["version"], env["kdf"]) == (ROOMS_FORMAT, ROOMS_VERSION, "keyring")
+        check_not_plaintext()
+        data_key = chat_crypto.parse_raw_key(kr.store[(KEYRING_SERVICE, KEYRING_ENTRY)])
+        assert len(data_key) == 32
+
+        # 2. save -> load round trip; the data key is made once and reused
+        assert RoomVault(path, kr).load(never) == rooms
+        changed = dict(rooms, Extra={"server": "x", "port": "1", "channel": "c", "username": "n",
+                                     "encryption_key": "k"})
+        v = RoomVault(path, kr)
+        v.load(never)
+        v.save(changed, never)
+        assert RoomVault(path, kr).load(never) == changed
+        assert chat_crypto.parse_raw_key(kr.store[(KEYRING_SERVICE, KEYRING_ENTRY)]) == data_key
+        first_nonce = json.loads(raw(path))["nonce"]
+        v.save(changed, never)
+        assert json.loads(raw(path))["nonce"] != first_nonce  # fresh nonce on every write
+
+        # 3. A tampered file, a header edit, a missing or different keyring key: locked, never overwritten
+        good = raw(path)
+        env = json.loads(good)
+        ct = bytearray(base64.b64decode(env["ct"])); ct[0] ^= 1
+        for bad_env in (dict(env, ct=base64.b64encode(bytes(ct)).decode()), dict(env, extra=1)):
+            with open(path, "wb") as f:
+                f.write(json.dumps(bad_env).encode())
+            before = raw(path)
+            v = RoomVault(path, kr)
+            raises(lambda: v.load(never))
+            assert v.locked
+            raises(lambda: v.save(rooms, never))
+            assert raw(path) == before
+        with open(path, "wb") as f:
+            f.write(good)
+        for other in (MemKeyring(), None):   # key absent / no keyring at all
+            v = RoomVault(path, other)
+            raises(lambda: v.load(never))
+            raises(lambda: v.save(rooms, never))
+            assert raw(path) == good
+        other = MemKeyring()
+        other.set_password(KEYRING_SERVICE, KEYRING_ENTRY, chat_crypto.generate_key())
+        v = RoomVault(path, other)
+        raises(lambda: v.load(never))
+        raises(lambda: v.save(rooms, never))
+        assert raw(path) == good
+        damaged = MemKeyring()
+        damaged.set_password(KEYRING_SERVICE, KEYRING_ENTRY, "not a key")
+        raises(lambda: RoomVault(path, damaged).load(never))
+        with open(path, "wb") as f:
+            f.write(b"neither format")
+        raises(lambda: RoomVault(path, kr).load(never))
+
+        # 4. No keyring: migrate with a new passphrase, unlock next session, wrong one retried
+        for no_keyring in (None, NullKeyring()):
+            write_legacy(rooms)
+            ask = answers("correct horse battery")
+            v = RoomVault(path, no_keyring)
+            assert v.load(ask) == rooms and ask.prompts[0][1] is True   # chose a new one
+            assert v.mode == "passphrase" and not v.legacy_pending
+            env = json.loads(raw(path))
+            assert env["kdf"] == "scrypt" and env["n"] == PASS_SCRYPT_N
+            check_not_plaintext()
+            v.save(changed, never)              # same session: no prompt again
+            ask = answers("wrong", "correct horse battery")
+            v = RoomVault(path, no_keyring)
+            assert v.load(ask) == changed and len(ask.prompts) == 2
+            assert "Wrong passphrase" in ask.prompts[1][0]
+            assert json.loads(raw(path))["salt"] == env["salt"]
+
+        # 5. No keyring, migration passphrase cancelled: rooms still usable, old file kept untouched
+        write_legacy(rooms)
+        before = raw(path)
+        v = RoomVault(path, None)
+        assert v.load(answers(None)) == rooms and v.legacy_pending
+        assert raw(path) == before and "old" in v.describe()
+        raises(lambda: v.save(rooms, answers(None)))
+        assert raw(path) == before
+        v.save(rooms, answers("another passphrase"))
+        assert not v.legacy_pending and RoomVault(path, None).load(answers("another passphrase")) == rooms
+
+        # 6. No keyring, unlock cancelled: locked; saving asks again and merges, never clobbers
+        before = raw(path)
+        v = RoomVault(path, None)
+        assert v.load(answers(None)) == {} and v.locked
+        new = {"New": {"server": "s", "port": "1", "channel": "c", "username": "n", "encryption_key": "k"}}
+        raises(lambda: v.save(new, answers(None)))
+        assert raw(path) == before
+        merged = v.save(new, answers("another passphrase"))
+        assert merged == {**rooms, **new} and not v.locked
+        assert RoomVault(path, None).load(answers("another passphrase")) == merged
+
+        # 7. Never plaintext: a new file with no keyring and no passphrase is not written at all
+        os.remove(path)
+        v = RoomVault(path, None)
+        assert v.load(never) == {}
+        raises(lambda: v.save(rooms, answers(None)))
+        assert not os.path.exists(path)
+
+        # 8. A passphrase file moves to the keyring once one is available
+        RoomVault(path, None).save(rooms, answers("passphrase file"))
+        kr2 = MemKeyring()
+        v = RoomVault(path, kr2)
+        assert v.load(answers("passphrase file")) == rooms and v.mode == "keyring"
+        assert json.loads(raw(path))["kdf"] == "keyring"
+        assert RoomVault(path, kr2).load(never) == rooms
+
+        # 9. Exports: passphrase-encrypted round trip, wrong passphrase, tampering, old plaintext
+        blob = export_rooms_data(rooms, "export passphrase")
+        assert b"secret-pw" not in blob and json.loads(blob)["format"] == EXPORT_FORMAT
+        ask = answers("nope", "export passphrase")
+        assert import_rooms_data(blob, ask) == (rooms, False) and len(ask.prompts) == 2
+        assert import_rooms_data(blob, answers(None)) == (None, False)
+        env = json.loads(blob)
+        assert import_rooms_data(json.dumps(dict(env, n=2 ** 16)).encode(),   # header is authenticated
+                                 answers("export passphrase", None)) == (None, False)
+        assert import_rooms_data(json.dumps(rooms).encode(), never) == (rooms, True)
+        assert import_rooms_data(b"\xef\xbb\xbf" + json.dumps(rooms).encode(), never) == (rooms, True)
+        raises(lambda: import_rooms_data(b"[1, 2]", never))
+        raises(lambda: import_rooms_data(raw(path), never))   # a saved-rooms file isn't an export
+        raises(lambda: import_rooms_data(b"\x00junk", never))
+
+    # 10. Chat colors: stable, readable on the chat background, ours distinct
+    def luminance(hex_color):
+        def channel(c):
+            c /= 255
+            return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+        r, g, b = (int(hex_color[i:i + 2], 16) for i in (1, 3, 5))
+        return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+    bg = luminance(CHAT_BG)
+    for color in USER_COLORS + (MY_COLOR, SYSTEM_COLOR):
+        ratio = (bg + 0.05) / (luminance(color) + 0.05)
+        assert ratio >= 4.5, f"{color} contrast {ratio:.2f}"
+    assert len(set(USER_COLORS)) == len(USER_COLORS) >= 8 and MY_COLOR not in USER_COLORS
+    names = [f"user{i}" for i in range(200)] + ["alice", "Bob", "ünïcode"]
+    indexes = [user_color_index(n) for n in names]
+    assert indexes == [user_color_index(n) for n in names]
+    assert all(0 <= i < len(USER_COLORS) for i in indexes) and len(set(indexes)) == len(USER_COLORS)
+    assert user_color_index("alice") == int(hashlib.sha256(b"alice").hexdigest()[:8], 16) % len(USER_COLORS)
+    print("mqchat self-tests passed")
+
+
 if __name__ == "__main__":
+    if "--self-test" in sys.argv:
+        _self_test()
+        sys.exit(0)
     # Check for required packages
     try:
         import paho.mqtt.client as mqtt
         from cryptography.fernet import Fernet
-        import qrcode, certifi  # noqa: F401
+        import qrcode, certifi, keyring  # noqa: F401
         from PIL import Image, ImageTk  # noqa: F401
     except ImportError as e:
         print(f"Missing required package: {e}")
         print("\nPlease install required packages:")
-        print("pip install paho-mqtt cryptography qrcode pillow certifi")
+        print("pip install paho-mqtt cryptography qrcode pillow certifi keyring")
         input("Press Enter to exit...")
         exit(1)
         

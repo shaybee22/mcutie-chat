@@ -9,7 +9,7 @@ echo "========================================"
 echo
 
 echo "[1/4] Installing PyInstaller and the app's packages..."
-pip3 install pyinstaller paho-mqtt cryptography qrcode pillow certifi
+pip3 install pyinstaller paho-mqtt cryptography qrcode pillow certifi keyring
 if [ $? -ne 0 ]; then
     echo "ERROR: Failed to install PyInstaller"
     exit 1
@@ -23,7 +23,9 @@ echo
 echo "[3/4] Building portable executable..."
 echo "This may take a few minutes..."
 # --paths: the protocol modules (chat_crypto, qr_exchange, tls_config) are shared with the Android app
-pyinstaller --onefile --windowed --name="McutieChat" --paths ../AndroidApp --add-data "../mcutie-icon.png:." --distpath="./portable" ../mqchat.py
+# keyring finds its backends via entry points; PyInstaller's keyring hook bundles them, and the
+# Secret Service backend (GNOME Keyring / KWallet over D-Bus) is also named explicitly
+pyinstaller --onefile --windowed --name="McutieChat" --paths ../AndroidApp --hidden-import keyring.backends.SecretService --copy-metadata keyring --add-data "../mcutie-icon.png:." --distpath="./portable" ../mqchat.py
 
 if [ $? -ne 0 ]; then
     echo "ERROR: Build failed!"
