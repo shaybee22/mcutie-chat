@@ -135,7 +135,8 @@ Own messages are rendered locally on send; incoming messages from the same usern
 - #9: root `README.md` rewritten for v1.0.0 (what it is, encryption, QR exchange, downloads, Linux from source, own broker). It links to `AndroidApp/README.md`, `Linux/README.md`, `BROKER-SETUP.md` and `PROTOCOL.md` instead of repeating them; keep it that way, and update its download links on each release.
 - #10: chat markup escaped, Android backup off, broker limits in `install.sh`;
 - #11: saved rooms in `files/rooms` (survive updates), encrypted with a data key wrapped by a per-use Keystore key (fingerprint/PIN once per app session); `minapi` 30.
-- Next: v1.1.0 (version bumped, READMEs point to v1.1.0; the Windows row keeps the unchanged v1.0.0 exe). Not tagged yet: the release needs `mcutiechat-1.1.0-arm64-v8a-release.apk` and its `SHA256SUMS.txt`.
+- #13 (desktop, `../mqchat.py`): saved rooms AES-256-GCM with a data key in the OS keyring (passphrase fallback when there's none), passphrase-encrypted exports, per-user chat colors.
+- #12: v1.1.0 for both apps (version bumped, READMEs point to v1.1.0, including `McutieChat-1.1.0-windows-x64.exe`). The v1.1.0 release starts as a draft with the Windows exe; it still needs `mcutiechat-1.1.0-arm64-v8a-release.apk` and the APK's line in `SHA256SUMS.txt`.
 
 **Tested on hardware:**
 - v1.1.0 saved rooms (debug build, Razr Ultra 2025, Android 16): prompt right after a phone unlock, cancel, fingerprint and PIN, re-lock on Home, v1→v2 migration, no plaintext left in app storage, `install -r` update keeps rooms. Release build installed and starts.

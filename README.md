@@ -18,10 +18,10 @@ There are two clients, and they talk to each other:
 | Platform | File | Notes |
 |---|---|---|
 | Android 11+ (64-bit ARM) | [mcutiechat-1.1.0-arm64-v8a-release.apk](https://github.com/shaybee22/mcutie-chat/releases/download/v1.1.0/mcutiechat-1.1.0-arm64-v8a-release.apk) | Needs Android 11 or later. Allow installs from unknown sources. **Updating from v1.0.0:** your saved rooms are lost once, so have your Room QRs ready to re-scan; later updates keep them. If you had a test build installed before, uninstall it first: the signing key is different. Uninstalling deletes that build's saved rooms. |
-| Windows (64-bit) | Unchanged since v1.0.0: [McutieChat-1.0.0-windows-x64.exe](https://github.com/shaybee22/mcutie-chat/releases/download/v1.0.0/McutieChat-1.0.0-windows-x64.exe) | Portable: nothing to install, and no Python needed. It's unsigned, so SmartScreen may warn you ("More info → Run anyway"). |
+| Windows (64-bit) | [McutieChat-1.1.0-windows-x64.exe](https://github.com/shaybee22/mcutie-chat/releases/download/v1.1.0/McutieChat-1.1.0-windows-x64.exe) | Portable: nothing to install, and no Python needed. It's unsigned, so SmartScreen may warn you ("More info → Run anyway"). **Updating from v1.0.0:** your saved rooms are converted to the new encrypted format the first time it starts; nothing to re-enter. |
 | Linux | [run from source](#-running-from-source-linux) | Or build a single-file binary: see [Linux/README.md](Linux/README.md). |
 
-Checksums are in `SHA256SUMS.txt` on each release page: [v1.1.0](https://github.com/shaybee22/mcutie-chat/releases/download/v1.1.0/SHA256SUMS.txt) for the Android APK, [v1.0.0](https://github.com/shaybee22/mcutie-chat/releases/download/v1.0.0/SHA256SUMS.txt) for the Windows exe.
+Checksums are in [`SHA256SUMS.txt`](https://github.com/shaybee22/mcutie-chat/releases/download/v1.1.0/SHA256SUMS.txt) on the release page.
 
 You'll also need a broker. You can [host your own](#-hosting-your-own-broker) or use any MQTT broker you have access to.
 
@@ -82,11 +82,13 @@ sudo apt install python3-tk python3-venv          # Debian/Ubuntu
 git clone https://github.com/shaybee22/mcutie-chat.git
 cd mcutie-chat
 python3 -m venv .venv && . .venv/bin/activate
-pip install paho-mqtt cryptography qrcode pillow certifi
+pip install paho-mqtt cryptography qrcode pillow certifi keyring
 python3 mqchat.py
 ```
 
 The desktop client is the single file `mqchat.py`. It imports its encryption, QR and TLS code from `AndroidApp/`, the same code the Android app uses, so keep the repo together. The same steps work on Windows with `python mqchat.py`.
+
+Saved rooms (`mqtt_chat_rooms.json`, in the folder you start it from) are encrypted with AES-256-GCM. The key is a random one kept in the OS keyring: Windows Credential Manager on Windows, Secret Service (GNOME Keyring or KWallet) on Linux. Where there's no keyring (a headless Linux box, for example), the app asks for a passphrase each session instead, and the Saved Rooms tab says so. A saved-rooms file from an older version is converted the first time you start this one. **Export All** files are encrypted with a passphrase you choose when exporting. Plaintext exports from older versions can still be imported, after a warning.
 
 To build a portable binary yourself:
 - **Linux:** follow [Linux/README.md](Linux/README.md).
@@ -133,7 +135,7 @@ Details, all the options and troubleshooting: [BROKER-SETUP.md](BROKER-SETUP.md)
 ## ⚠️ Known limitations
 
 - Clients from before protocol v1 (the old Fernet-based MQTT Chat) can't talk to v1. Update every device in a room.
-- The desktop client's saved rooms (`mqtt_chat_rooms.json`, in the folder you start it from) are obfuscated, not encrypted. Anyone who can read that file can read your room keys and broker passwords, so keep it private. Proper protection through the OS keyring is on the roadmap.
+- The desktop client's saved-rooms file only opens for the same user on the same computer, because its key lives in that user's keyring. To move rooms to another computer, use **Export All** and **Import**.
 - The Android QR scanner opens in landscape.
 - Android saved rooms from v1.0.0 can't be carried over to v1.1.0 (the old version kept them where Android updates delete them). Re-scan your Room QRs after updating.
 
@@ -144,7 +146,7 @@ Details, all the options and troubleshooting: [BROKER-SETUP.md](BROKER-SETUP.md)
 * [x] Protocol v1 on desktop and Android (AES-256-GCM, QR exchange, TLS)
 * [x] First release (v1.0.0)
 * [x] Android saved rooms encrypted, unlocked with fingerprint or PIN, and kept across updates (v1.1.0)
-* [ ] Protect the desktop saved-rooms file properly (OS keyring)
+* [x] Protect the desktop saved-rooms file properly (OS keyring) (v1.1.0)
 * [ ] File/image sharing
 * [ ] Push notifications
 * [ ] Android/Desktop cross-device syncing
