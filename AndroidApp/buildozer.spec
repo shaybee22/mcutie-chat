@@ -30,7 +30,7 @@ presplash.filename = %(source.dir)s/icon/presplash.jpg
 android.presplash_color = #241647
 
 # (str) Application versioning (method 1)
-version = 1.0.0
+version = 1.1.0
 
 # (list) Application requirements
 # comma separated e.g. requirements = sqlite3,kivy

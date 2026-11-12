@@ -22,28 +22,28 @@ python3 chat_crypto.py
 ~/.venvs/mqttpeer/bin/python tls_config.py      # needs cryptography + certifi
 ~/.venvs/mqttpeer/bin/python room_store.py      # saved-room store, with a fake Keystore cipher (needs cryptography)
 
-# Build Android APK (config in buildozer.spec); output: bin/mcutiechat-1.0.0-arm64-v8a-debug.apk
+# Build Android APK (config in buildozer.spec); output: bin/mcutiechat-1.1.0-arm64-v8a-debug.apk
 source ~/.venvs/buildozer/bin/activate          # must be activated (VIRTUAL_ENV set), not just on PATH
 export PATH="$HOME/.cargo/bin:$PATH"            # rustup/cargo: p4a builds cryptography from source
 export PIP_NO_BINARY=charset-normalizer         # see the comment above `requirements` in buildozer.spec
 rm -rf .buildozer/android/platform/build-arm64-v8a/build/venv   # p4a corrupts this venv on every rebuild
 yes | buildozer android debug                   # `yes` accepts the SDK licences on first run
 
-# Release APK (same prep as above): bin/mcutiechat-1.0.0-arm64-v8a-release.apk. The signing key is
+# Release APK (same prep as above): bin/mcutiechat-1.1.0-arm64-v8a-release.apk. The signing key is
 # ~/.android-keys/mcutiechat-release.keystore (alias mcutiechat, PKCS12: one password), never in the repo.
 # All four P4A_RELEASE_* vars are needed, or buildozer quietly builds an unsigned APK.
 read -rsp 'Keystore password: ' P4A_RELEASE_KEYSTORE_PASSWD; echo
 export P4A_RELEASE_KEYSTORE_PASSWD P4A_RELEASE_KEYALIAS_PASSWD="$P4A_RELEASE_KEYSTORE_PASSWD"
 export P4A_RELEASE_KEYSTORE=~/.android-keys/mcutiechat-release.keystore P4A_RELEASE_KEYALIAS=mcutiechat
 yes | buildozer android release
-~/.buildozer/android/platform/android-sdk/build-tools/37.0.0/apksigner verify --print-certs bin/mcutiechat-1.0.0-arm64-v8a-release.apk
+~/.buildozer/android/platform/android-sdk/build-tools/37.0.0/apksigner verify --print-certs bin/mcutiechat-1.1.0-arm64-v8a-release.apk
 
 # Install and launch on the phone. If WSL's `adb devices` is empty (phone attached to Windows,
 # not via usbipd), use Windows' adb.exe with a Windows path: adb.exe install -r "$(wslpath -w bin/...apk)"
 # Debug and release builds have different signatures: switching needs `adb uninstall org.seumas.mcutiechat`
 # first, which deletes the phone's saved rooms. Builds up to v1.0.0 kept rooms in files/app/rooms, which
 # p4a deletes when any updated APK first starts, so `install -r` lost them too (see Persistence).
-adb install -r bin/mcutiechat-1.0.0-arm64-v8a-debug.apk
+adb install -r bin/mcutiechat-1.1.0-arm64-v8a-debug.apk
 adb shell monkey -p org.seumas.mcutiechat -c android.intent.category.LAUNCHER 1
 adb logcat -s python:* SDL:* AndroidRuntime:*
 
@@ -133,8 +133,12 @@ Own messages are rendered locally on send; incoming messages from the same usern
 - #6: release prep: root `.gitignore` (desktop saved rooms, PyInstaller output, keystores), version `1.0.0`, release artifact `apk`;
 - #7: README points to the v1.0.0 release;
 - #9: root `README.md` rewritten for v1.0.0 (what it is, encryption, QR exchange, downloads, Linux from source, own broker). It links to `AndroidApp/README.md`, `Linux/README.md`, `BROKER-SETUP.md` and `PROTOCOL.md` instead of repeating them; keep it that way, and update its download links on each release.
+- #10: chat markup escaped, Android backup off, broker limits in `install.sh`;
+- #11: saved rooms in `files/rooms` (survive updates), encrypted with a data key wrapped by a per-use Keystore key (fingerprint/PIN once per app session); `minapi` 30.
+- Next: v1.1.0 (version bumped, READMEs point to v1.1.0; the Windows row keeps the unchanged v1.0.0 exe). Not tagged yet: the release needs `mcutiechat-1.1.0-arm64-v8a-release.apk` and its `SHA256SUMS.txt`.
 
 **Tested on hardware:**
+- v1.1.0 saved rooms (debug build, Razr Ultra 2025, Android 16): prompt right after a phone unlock, cancel, fingerprint and PIN, re-lock on Home, v1→v2 migration, no plaintext left in app storage, `install -r` update keeps rooms. Release build installed and starts.
 - The signed release APK on the phone (after uninstalling the debug build): connect, messages, Room QR scan, Disconnect → Connect.
 - The Windows `.exe` (`build_mqchat.bat`) against the user's real cloud broker: icons, connect, messages with the phone, Room QR scanned by the phone, Disconnect → Connect.
 - Android (Razr, arm64) ↔ desktop client (`../mqchat.py`) ↔ the Kivy app on desktop.
